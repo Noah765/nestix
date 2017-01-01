@@ -6,6 +6,8 @@ use rnix::{
 };
 use rowan::ast::AstNode;
 
+const MAX_ATTRS_LEAVES: usize = 2;
+
 fn main() {
     let content = fs::read_to_string("flake.nix").unwrap();
 
@@ -20,7 +22,8 @@ fn main() {
             continue;
         }
 
-        let tree = AttrTreeNode::from_attr_set(attr_set, &mut visited_attr_sets);
+        let mut tree = AttrTreeNode::from_attr_set(attr_set, &mut visited_attr_sets);
+        tree.format();
 
         println!("{tree:#?}");
     }
@@ -29,6 +32,7 @@ fn main() {
 #[derive(Debug)]
 struct AttrTreeNode {
     text: Option<String>,
+    inline: bool,
     children: Vec<AttrTreeNode>,
 }
 
@@ -36,6 +40,7 @@ impl AttrTreeNode {
     fn new(text: Option<String>) -> Self {
         Self {
             text,
+            inline: true,
             children: Vec::new(),
         }
     }
@@ -119,5 +124,41 @@ impl AttrTreeNode {
 
             i += 1;
         }
+    }
+
+    fn format(&mut self) {
+        for x in self.children.iter_mut() {
+            Self::format_layer(vec![x], MAX_ATTRS_LEAVES);
+        }
+    }
+
+    fn format_layer(mut layer: Vec<&mut Self>, mut max_leaves: usize) {
+        if layer.is_empty() {
+            return;
+        }
+
+        max_leaves -= layer.iter().filter(|x| x.children.is_empty()).count();
+
+        let mut next_layer_size: usize = layer.iter().map(|x| x.children.len()).sum();
+        while next_layer_size > max_leaves {
+            let x = layer
+                .iter_mut()
+                .filter(|x| x.inline)
+                .max_by_key(|x| x.children.len())
+                .unwrap();
+
+            max_leaves -= 1;
+            next_layer_size -= x.children.len();
+
+            x.inline = false;
+            x.format();
+        }
+
+        let next_layer = layer
+            .into_iter()
+            .filter(|x| x.inline)
+            .flat_map(|x| x.children.iter_mut())
+            .collect();
+        Self::format_layer(next_layer, max_leaves);
     }
 }

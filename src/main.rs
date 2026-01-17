@@ -23,6 +23,7 @@ fn main() {
         }
 
         let mut tree = AttrTreeNode::from_attr_set(attr_set, &mut visited_attr_sets);
+        tree.normalize();
         tree.format();
 
         println!("{tree:#?}");
@@ -55,7 +56,6 @@ impl AttrTreeNode {
                 visited_attr_sets,
             ));
         }
-        root.normalize_tree();
 
         root
     }
@@ -103,7 +103,7 @@ impl AttrTreeNode {
         root.children.into_iter().next().unwrap()
     }
 
-    fn normalize_tree(&mut self) {
+    fn normalize(&mut self) {
         let mut i = 0;
         while i < self.children.len() {
             let text = self.children[i].text.clone();
@@ -120,7 +120,7 @@ impl AttrTreeNode {
                 .collect();
             self.children[i].children.extend(collected_children);
 
-            self.children[i].normalize_tree();
+            self.children[i].normalize();
 
             i += 1;
         }

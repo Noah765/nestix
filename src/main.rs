@@ -1,7 +1,7 @@
-use std::{collections::HashSet, fs};
+use std::fs;
 
 use rnix::{
-    Root, SyntaxElement, TextSize,
+    NodeOrToken, Root, SyntaxElement, SyntaxNode,
     ast::{
         AstToken, Attr, AttrSet, Attrpath, AttrpathValue, Expr, HasEntry, InterpolPart, Whitespace,
     },
@@ -12,24 +12,24 @@ const MAX_ATTRS_LEAVES: usize = 2;
 
 fn main() {
     let file = fs::read_to_string("flake.nix").unwrap();
+    let formatted_file = format_node(&file, Root::parse(&file).syntax());
+    println!("{formatted_file}");
+}
 
-    let mut visited_attr_sets = HashSet::new();
-
-    for attr_set in Root::parse(&file)
-        .syntax()
-        .descendants()
-        .filter_map(AttrSet::cast)
-    {
-        if visited_attr_sets.contains(&attr_set.syntax().text_range().start()) {
-            continue;
+fn format_node(file: &str, node: SyntaxNode) -> String {
+    match AttrSet::cast(node.clone()) {
+        None => node
+            .children_with_tokens()
+            .fold(String::new(), |acc, x| match x {
+                NodeOrToken::Node(x) => acc + &format_node(file, x),
+                NodeOrToken::Token(x) => acc + x.text(),
+            }),
+        Some(x) => {
+            let mut tree = AttrTreeNode::from_attr_set(x.clone(), &mut 0);
+            tree.normalize();
+            tree.format();
+            tree.print(file, AttrSetFormat::new(file, x))
         }
-
-        let mut tree =
-            AttrTreeNode::from_attr_set(attr_set.clone(), &mut 0, &mut visited_attr_sets);
-        tree.normalize();
-        tree.format();
-
-        println!("{}", tree.print(AttrSetFormat::new(&file, attr_set)));
     }
 }
 
@@ -81,47 +81,35 @@ impl AttrSetFormat {
 #[derive(Debug)]
 struct AttrTreeNode {
     key: Option<String>,
-    text: String,
+    key_text: String,
+    value: Option<SyntaxNode>,
     position: u32,
     inline: bool,
     children: Vec<AttrTreeNode>,
 }
 
 impl AttrTreeNode {
-    fn new(key: Option<String>, text: String, position: u32) -> Self {
+    fn new(key: Option<String>, key_text: String, position: u32) -> Self {
         Self {
             key,
-            text,
+            key_text,
+            value: None,
             position,
             inline: true,
             children: Vec::new(),
         }
     }
 
-    fn from_attr_set(
-        attr_set: AttrSet,
-        position: &mut u32,
-        visited_attr_sets: &mut HashSet<TextSize>,
-    ) -> Self {
-        visited_attr_sets.insert(attr_set.syntax().text_range().start());
-
+    fn from_attr_set(attr_set: AttrSet, position: &mut u32) -> Self {
         let mut root = Self::new(None, String::new(), *position);
         for attr_path_value in attr_set.attrpath_values() {
-            root.children.push(Self::from_attr_path_value(
-                attr_path_value,
-                position,
-                visited_attr_sets,
-            ));
+            root.children
+                .push(Self::from_attr_path_value(attr_path_value, position));
         }
-
         root
     }
 
-    fn from_attr_path_value(
-        attr_path_value: AttrpathValue,
-        position: &mut u32,
-        visited_attr_sets: &mut HashSet<TextSize>,
-    ) -> Self {
+    fn from_attr_path_value(attr_path_value: AttrpathValue, position: &mut u32) -> Self {
         let mut tree = Self::from_attr_path(attr_path_value.attrpath().unwrap(), position);
         let mut leaf = &mut tree;
         while !leaf.children.is_empty() {
@@ -134,9 +122,9 @@ impl AttrTreeNode {
         }
 
         if let Expr::AttrSet(attr_set) = value {
-            leaf.children = Self::from_attr_set(attr_set, position, visited_attr_sets).children;
+            leaf.children = Self::from_attr_set(attr_set, position).children;
         } else {
-            leaf.text += &format!(" = {};", value.syntax());
+            leaf.value = Some(value.syntax().clone());
         }
 
         tree
@@ -226,11 +214,11 @@ impl AttrTreeNode {
         Self::format_layer(next_layer, max_leaves);
     }
 
-    fn print(&self, format: AttrSetFormat) -> String {
+    fn print(&self, file: &str, format: AttrSetFormat) -> String {
         let mut attrs: Vec<_> = self
             .children
             .iter()
-            .flat_map(|x| x.print_node(&format))
+            .flat_map(|x| x.print_node(file, &format))
             .collect();
         attrs.sort_unstable();
 
@@ -253,22 +241,19 @@ impl AttrTreeNode {
         }
     }
 
-    fn print_node(&self, format: &AttrSetFormat) -> Vec<(u32, String)> {
+    fn print_node(&self, file: &str, format: &AttrSetFormat) -> Vec<(u32, String)> {
         if self.children.is_empty() {
-            vec![(self.position, self.text.clone())]
+            let value = format_node(file, self.value.clone().unwrap());
+            vec![(self.position, format!("{} = {value};", self.key_text))]
         } else if self.inline {
             self.children
                 .iter()
-                .flat_map(|x| x.print_node(format))
-                .map(|(position, x)| (position, format!("{}.{x}", self.text)))
+                .flat_map(|x| x.print_node(file, format))
+                .map(|(position, x)| (position, format!("{}.{x}", self.key_text)))
                 .collect()
         } else {
-            let text = format!(
-                "{} = {};",
-                self.text,
-                self.print(format.with_increased_indentation())
-            );
-            vec![(self.position, text)]
+            let body = self.print(file, format.with_increased_indentation());
+            vec![(self.position, format!("{} = {body};", self.key_text))]
         }
     }
 }

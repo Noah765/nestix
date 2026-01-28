@@ -24,7 +24,8 @@ fn main() {
             continue;
         }
 
-        let mut tree = AttrTreeNode::from_attr_set(attr_set.clone(), &mut visited_attr_sets);
+        let mut tree =
+            AttrTreeNode::from_attr_set(attr_set.clone(), &mut 0, &mut visited_attr_sets);
         tree.normalize();
         tree.format();
 
@@ -81,27 +82,34 @@ impl AttrSetFormat {
 struct AttrTreeNode {
     key: Option<String>,
     text: String,
+    position: u32,
     inline: bool,
     children: Vec<AttrTreeNode>,
 }
 
 impl AttrTreeNode {
-    fn new(key: Option<String>, text: String) -> Self {
+    fn new(key: Option<String>, text: String, position: u32) -> Self {
         Self {
             key,
             text,
+            position,
             inline: true,
             children: Vec::new(),
         }
     }
 
-    fn from_attr_set(attr_set: AttrSet, visited_attr_sets: &mut HashSet<TextSize>) -> Self {
+    fn from_attr_set(
+        attr_set: AttrSet,
+        position: &mut u32,
+        visited_attr_sets: &mut HashSet<TextSize>,
+    ) -> Self {
         visited_attr_sets.insert(attr_set.syntax().text_range().start());
 
-        let mut root = Self::new(None, String::new());
+        let mut root = Self::new(None, String::new(), *position);
         for attr_path_value in attr_set.attrpath_values() {
             root.children.push(Self::from_attr_path_value(
                 attr_path_value,
+                position,
                 visited_attr_sets,
             ));
         }
@@ -111,9 +119,10 @@ impl AttrTreeNode {
 
     fn from_attr_path_value(
         attr_path_value: AttrpathValue,
+        position: &mut u32,
         visited_attr_sets: &mut HashSet<TextSize>,
     ) -> Self {
-        let mut tree = Self::from_attr_path(attr_path_value.attrpath().unwrap());
+        let mut tree = Self::from_attr_path(attr_path_value.attrpath().unwrap(), position);
         let mut leaf = &mut tree;
         while !leaf.children.is_empty() {
             leaf = &mut leaf.children[0];
@@ -125,7 +134,7 @@ impl AttrTreeNode {
         }
 
         if let Expr::AttrSet(attr_set) = value {
-            leaf.children = Self::from_attr_set(attr_set, visited_attr_sets).children;
+            leaf.children = Self::from_attr_set(attr_set, position, visited_attr_sets).children;
         } else {
             leaf.text += &format!(" = {};", value.syntax());
         }
@@ -133,8 +142,8 @@ impl AttrTreeNode {
         tree
     }
 
-    fn from_attr_path(attr_path: Attrpath) -> Self {
-        let mut root = Self::new(None, String::new());
+    fn from_attr_path(attr_path: Attrpath, position: &mut u32) -> Self {
+        let mut root = Self::new(None, String::new(), *position);
         let mut parent = &mut root;
 
         for attr in attr_path.attrs() {
@@ -147,11 +156,13 @@ impl AttrTreeNode {
                 }),
             };
 
-            let node = Self::new(key, attr.syntax().to_string());
+            let node = Self::new(key, attr.syntax().to_string(), *position);
             parent.children.push(node);
 
             parent = &mut parent.children[0];
         }
+
+        *position += 1;
 
         root.children.into_iter().next().unwrap()
     }
@@ -216,43 +227,48 @@ impl AttrTreeNode {
     }
 
     fn print(&self, format: AttrSetFormat) -> String {
+        let mut attrs: Vec<_> = self
+            .children
+            .iter()
+            .flat_map(|x| x.print_node(&format))
+            .collect();
+        attrs.sort_unstable();
+
         match &format {
             AttrSetFormat::Inline(indentation) => {
-                let body = self
-                    .children
-                    .iter()
-                    .flat_map(|x| x.print_node(&format))
+                let body = attrs
+                    .into_iter()
+                    .map(|(_, x)| x)
                     .reduce(|acc, x| acc + " " + &x)
                     .unwrap();
                 format!("{{{indentation}{body}{indentation}}}")
             }
             AttrSetFormat::Multiline(start_indentation, indentation) => {
-                let body: String = self
-                    .children
-                    .iter()
-                    .flat_map(|x| x.print_node(&format))
-                    .map(|x| format!("\n{start_indentation}{indentation}{x}"))
+                let body: String = attrs
+                    .into_iter()
+                    .map(|(_, x)| format!("\n{start_indentation}{indentation}{x}"))
                     .collect();
                 format!("{{{body}\n{start_indentation}}}")
             }
         }
     }
 
-    fn print_node(&self, format: &AttrSetFormat) -> Vec<String> {
+    fn print_node(&self, format: &AttrSetFormat) -> Vec<(u32, String)> {
         if self.children.is_empty() {
-            vec![self.text.clone()]
+            vec![(self.position, self.text.clone())]
         } else if self.inline {
             self.children
                 .iter()
                 .flat_map(|x| x.print_node(format))
-                .map(|x| format!("{}.{x}", self.text))
+                .map(|(position, x)| (position, format!("{}.{x}", self.text)))
                 .collect()
         } else {
-            vec![format!(
+            let text = format!(
                 "{} = {};",
                 self.text,
                 self.print(format.with_increased_indentation())
-            )]
+            );
+            vec![(self.position, text)]
         }
     }
 }

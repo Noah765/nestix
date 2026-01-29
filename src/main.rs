@@ -1,10 +1,8 @@
 use std::fs;
 
 use rnix::{
-    NodeOrToken, Root, SyntaxElement, SyntaxNode,
-    ast::{
-        AstToken, Attr, AttrSet, Attrpath, AttrpathValue, Expr, HasEntry, InterpolPart, Whitespace,
-    },
+    NodeOrToken, Root, SyntaxKind, SyntaxNode,
+    ast::{AstToken, Attr, AttrSet, Attrpath, AttrpathValue, Expr, HasEntry, InterpolPart},
 };
 use rowan::ast::AstNode;
 
@@ -35,20 +33,28 @@ fn format_node(file: &str, node: SyntaxNode) -> String {
 
 #[derive(Debug)]
 enum AttrSetFormat {
-    Inline(String),
-    Multiline(String, String),
+    Inline(bool, String),
+    Multiline(bool, String, String),
 }
 
 impl AttrSetFormat {
     fn new(file: &str, attr_set: AttrSet) -> Self {
-        let whitespace = attr_set.syntax().children_with_tokens().nth(1).unwrap();
-        let whitespace = match SyntaxElement::into_token(whitespace).and_then(Whitespace::cast) {
-            None => String::new(),
-            Some(x) => x.syntax().to_string(),
+        let recursive = attr_set.rec_token().is_some();
+
+        let whitespace = attr_set
+            .syntax()
+            .children_with_tokens()
+            .skip_while(|x| x.kind() != SyntaxKind::TOKEN_L_BRACE)
+            .nth(1)
+            .unwrap();
+        let whitespace = if whitespace.kind() == SyntaxKind::TOKEN_WHITESPACE {
+            whitespace.to_string()
+        } else {
+            String::new()
         };
 
         match whitespace.rfind('\n') {
-            None => AttrSetFormat::Inline(whitespace),
+            None => AttrSetFormat::Inline(recursive, whitespace),
             Some(i) => {
                 let start_indentation = file[..attr_set.syntax().text_range().start().into()]
                     .rsplit('\n')
@@ -62,18 +68,18 @@ impl AttrSetFormat {
                     .strip_prefix(&start_indentation)
                     .unwrap_or("  ")
                     .to_string();
-                AttrSetFormat::Multiline(start_indentation, indentation)
+                AttrSetFormat::Multiline(recursive, start_indentation, indentation)
             }
         }
     }
 
-    fn with_increased_indentation(&self) -> Self {
+    fn subset_format(&self) -> Self {
         match self {
-            AttrSetFormat::Inline(indentation) => AttrSetFormat::Inline(indentation.clone()),
-            AttrSetFormat::Multiline(start_indentation, indentation) => AttrSetFormat::Multiline(
-                start_indentation.clone() + indentation,
-                indentation.clone(),
-            ),
+            AttrSetFormat::Inline(_, x) => AttrSetFormat::Inline(false, x.clone()),
+            AttrSetFormat::Multiline(_, start_indentation, indentation) => {
+                let start_indentation = start_indentation.clone() + indentation;
+                AttrSetFormat::Multiline(false, start_indentation, indentation.clone())
+            }
         }
     }
 }
@@ -121,8 +127,10 @@ impl AttrTreeNode {
             value = x.expr().unwrap();
         }
 
-        if let Expr::AttrSet(attr_set) = value {
-            leaf.children = Self::from_attr_set(attr_set, position).children;
+        if let Expr::AttrSet(ref attr_set) = value
+            && attr_set.rec_token().is_none()
+        {
+            leaf.children = Self::from_attr_set(attr_set.clone(), position).children;
         } else {
             leaf.value = Some(value.syntax().clone());
         }
@@ -223,20 +231,22 @@ impl AttrTreeNode {
         attrs.sort_unstable();
 
         match &format {
-            AttrSetFormat::Inline(indentation) => {
+            AttrSetFormat::Inline(recursive, indentation) => {
                 let body = attrs
                     .into_iter()
                     .map(|(_, x)| x)
                     .reduce(|acc, x| acc + " " + &x)
                     .unwrap();
-                format!("{{{indentation}{body}{indentation}}}")
+                let rec = if *recursive { "rec " } else { "" };
+                format!("{rec}{{{indentation}{body}{indentation}}}")
             }
-            AttrSetFormat::Multiline(start_indentation, indentation) => {
+            AttrSetFormat::Multiline(recursive, start_indentation, indentation) => {
                 let body: String = attrs
                     .into_iter()
                     .map(|(_, x)| format!("\n{start_indentation}{indentation}{x}"))
                     .collect();
-                format!("{{{body}\n{start_indentation}}}")
+                let rec = if *recursive { "rec " } else { "" };
+                format!("{rec}{{{body}\n{start_indentation}}}")
             }
         }
     }
@@ -252,7 +262,7 @@ impl AttrTreeNode {
                 .map(|(position, x)| (position, format!("{}.{x}", self.key_text)))
                 .collect()
         } else {
-            let body = self.print(file, format.with_increased_indentation());
+            let body = self.print(file, format.subset_format());
             vec![(self.position, format!("{} = {body};", self.key_text))]
         }
     }

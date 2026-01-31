@@ -2,7 +2,7 @@ use std::fs;
 
 use rnix::{
     NodeOrToken, Root, SyntaxKind, SyntaxNode,
-    ast::{AstToken, Attr, AttrSet, Attrpath, AttrpathValue, Expr, InterpolPart},
+    ast::{AstToken, Attr, AttrSet, Attrpath, AttrpathValue, Expr, HasEntry, InterpolPart},
 };
 use rowan::ast::AstNode;
 
@@ -16,18 +16,18 @@ fn main() {
 
 fn format_node(file: &str, node: SyntaxNode) -> String {
     match AttrSet::cast(node.clone()) {
-        None => node
-            .children_with_tokens()
-            .fold(String::new(), |acc, x| match x {
-                NodeOrToken::Node(x) => acc + &format_node(file, x),
-                NodeOrToken::Token(x) => acc + x.text(),
-            }),
-        Some(x) => {
+        Some(x) if x.attrpath_values().next().is_some() => {
             let mut tree = AttrTree::new(x.clone());
             tree.normalize();
             tree.format();
             tree.print(file)
         }
+        _ => node
+            .children_with_tokens()
+            .fold(String::new(), |acc, x| match x {
+                NodeOrToken::Node(x) => acc + &format_node(file, x),
+                NodeOrToken::Token(x) => acc + x.text(),
+            }),
     }
 }
 
@@ -139,6 +139,7 @@ impl AttrTreeBranch {
 
         if let Expr::AttrSet(attr_set) = value.clone()
             && attr_set.rec_token().is_none()
+            && attr_set.attrpath_values().next().is_some()
         {
             let subtree = Self::from_attr_set(attr_set, leaves);
             let leaf = leaf_parent.children.last_mut().unwrap();
@@ -311,14 +312,14 @@ impl AttrTreeBranch {
             .collect();
         attrs.sort_unstable_by_key(|x| x.1);
 
-        let position = attrs[0].1;
+        let position = attrs.first().map(|x| x.1).unwrap_or(0);
         let text = match &format {
             AttrSetFormat::Inline(recursive, indentation) => {
                 let body = attrs
                     .into_iter()
                     .map(|x| x.0)
                     .reduce(|acc, x| acc + " " + &x)
-                    .unwrap();
+                    .unwrap_or_else(String::new);
                 let rec = if *recursive { "rec " } else { "" };
                 format!("{rec}{{{indentation}{body}{indentation}}}")
             }

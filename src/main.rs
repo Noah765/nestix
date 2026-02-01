@@ -1,4 +1,7 @@
-use std::fs;
+use std::{
+    fmt::{self, Debug, Formatter},
+    fs,
+};
 
 use rnix::{
     NodeOrToken, Root, SyntaxKind, SyntaxNode,
@@ -38,7 +41,6 @@ struct AttrTree {
     leaves: Vec<Leaf>,
 }
 
-#[derive(Debug)]
 struct Branch {
     key: Option<String>,
     key_text: String,
@@ -49,7 +51,6 @@ struct Branch {
     children: Vec<Branch>,
 }
 
-#[derive(Debug)]
 struct Leaf {
     key_text: String,
     value: Expr,
@@ -374,6 +375,20 @@ impl Branch {
     }
 }
 
+impl Debug for Branch {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Branch")
+            .field("key", &format_args!("{:?}", self.key))
+            .field("key_text", &self.key_text)
+            .field("inline", &self.inline)
+            .field("format", &format_args!("{:?}", self.format))
+            .field("before_empty_line", &self.before_empty_line)
+            .field("leaves", &format_args!("{:?}", self.leaves))
+            .field("children", &self.children)
+            .finish()
+    }
+}
+
 impl Leaf {
     fn from_attr_tree_branch(branch: Branch, value: Expr) -> Self {
         Self {
@@ -387,6 +402,22 @@ impl Leaf {
         let value = format_node(self.value.syntax().clone(), file);
         let text = format!("{} = {value};", self.key_text);
         (text, self.before_empty_line, position)
+    }
+}
+
+impl Debug for Leaf {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut value = self.value.to_string();
+        if value.len() >= 96 {
+            value.truncate(96);
+            value += "[..]";
+        }
+
+        f.debug_struct("Leaf")
+            .field("key_text", &self.key_text)
+            .field("value", &format_args!("Expr({value:?})"))
+            .field("before_empty_line", &self.before_empty_line)
+            .finish()
     }
 }
 

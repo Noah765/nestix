@@ -17,7 +17,7 @@ fn main() {
 fn format_node(node: SyntaxNode, file: &str) -> String {
     match AttrSet::cast(node.clone()) {
         Some(x) if x.attrpath_values().next().is_some() => {
-            let mut tree = AttrTree::new(x.clone());
+            let mut tree = AttrTree::new(x.clone(), file);
             tree.normalize();
             tree.format();
             tree.print(file)
@@ -33,7 +33,6 @@ fn format_node(node: SyntaxNode, file: &str) -> String {
 
 #[derive(Debug)]
 struct AttrTree {
-    attr_set: AttrSet,
     recursive: bool,
     root: Branch,
     leaves: Vec<Leaf>,
@@ -44,6 +43,7 @@ struct Branch {
     key: Option<String>,
     key_text: String,
     inline: bool,
+    format: Option<Format>,
     before_empty_line: bool,
     leaves: Vec<usize>,
     children: Vec<Branch>,
@@ -56,19 +56,18 @@ struct Leaf {
     before_empty_line: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Format {
     Inline(String),
     Multiline(String, String),
 }
 
 impl AttrTree {
-    fn new(attr_set: AttrSet) -> Self {
+    fn new(attr_set: AttrSet, file: &str) -> Self {
         let mut leaves = Vec::new();
         let recursive = attr_set.rec_token().is_some();
-        let root = Branch::from_attr_set(attr_set.clone(), &mut leaves);
+        let root = Branch::from_attr_set(attr_set.clone(), &mut leaves, file);
         Self {
-            attr_set,
             recursive,
             root,
             leaves,
@@ -84,27 +83,27 @@ impl AttrTree {
     }
 
     fn print(&self, file: &str) -> String {
-        let format = Format::new(self.attr_set.clone(), file);
-        self.root
-            .print_attr_set(self.recursive, &self.leaves, format, file)
-            .0
+        let (x, _) = self.root.print_attr_set(self.recursive, &self.leaves, file);
+        x
     }
 }
 
 impl Branch {
-    fn new(key: Option<String>, key_text: String, inline: bool) -> Self {
+    fn new(key: Option<String>, key_text: String, inline: bool, format: Option<Format>) -> Self {
         Self {
             key,
             key_text,
             inline,
+            format,
             before_empty_line: false,
             leaves: Vec::new(),
             children: Vec::new(),
         }
     }
 
-    fn from_attr_set(attr_set: AttrSet, leaves: &mut Vec<Leaf>) -> Self {
-        let mut root = Self::new(None, String::new(), false);
+    fn from_attr_set(attr_set: AttrSet, leaves: &mut Vec<Leaf>, file: &str) -> Self {
+        let format = Format::new(attr_set.clone(), file);
+        let mut root = Self::new(None, String::new(), false, Some(format));
 
         let mut elements = attr_set
             .syntax()
@@ -123,7 +122,7 @@ impl Branch {
                 elements.next();
             }
 
-            root.add_attr_path_value(attr_path_value, before_empty_line, leaves);
+            root.add_attr_path_value(attr_path_value, before_empty_line, leaves, file);
         }
 
         root
@@ -134,6 +133,7 @@ impl Branch {
         attr_path_value: AttrpathValue,
         before_empty_line: bool,
         leaves: &mut Vec<Leaf>,
+        file: &str,
     ) {
         let node = Self::from_attr_path(attr_path_value.attrpath().unwrap());
         self.children.push(node);
@@ -153,9 +153,10 @@ impl Branch {
             && attr_set.rec_token().is_none()
             && attr_set.attrpath_values().next().is_some()
         {
-            let subtree = Self::from_attr_set(attr_set, leaves);
+            let subtree = Self::from_attr_set(attr_set, leaves, file);
             let leaf = leaf_parent.children.last_mut().unwrap();
             leaf.inline = false;
+            leaf.format = subtree.format;
             leaf.leaves = subtree.leaves;
             leaf.children = subtree.children;
         } else {
@@ -167,7 +168,7 @@ impl Branch {
     }
 
     fn from_attr_path(attr_path: Attrpath) -> Self {
-        let mut root = Self::new(None, String::new(), true);
+        let mut root = Self::new(None, String::new(), true, None);
         let mut parent = &mut root;
 
         for attr in attr_path.attrs() {
@@ -179,7 +180,7 @@ impl Branch {
                     InterpolPart::Interpolation(_) => None,
                 }),
             };
-            let node = Self::new(key, attr.to_string(), true);
+            let node = Self::new(key, attr.to_string(), true, None);
             parent.children.push(node);
 
             parent = &mut parent.children[0];
@@ -205,6 +206,9 @@ impl Branch {
                 .extract_if(i + 1.., |x| x.key == key)
                 .collect();
             let branch = &mut self.children[i];
+            if !children.is_empty() {
+                branch.format = None;
+            }
             for x in children {
                 branch.leaves.extend(x.leaves);
                 branch.children.extend(x.children);
@@ -218,11 +222,17 @@ impl Branch {
 
     fn format_attr_set(&mut self, leaves: &mut Vec<Leaf>) {
         for x in self.children.iter_mut() {
-            Self::format_layer(vec![x], MAX_ATTRS_LEAVES, leaves);
+            let format = self.format.as_ref().unwrap().subset_format();
+            Self::format_layer(vec![x], MAX_ATTRS_LEAVES, format, leaves);
         }
     }
 
-    fn format_layer(mut layer: Vec<&mut Self>, mut max_leaves: usize, leaves: &mut Vec<Leaf>) {
+    fn format_layer(
+        mut layer: Vec<&mut Self>,
+        mut max_leaves: usize,
+        format: Format,
+        leaves: &mut Vec<Leaf>,
+    ) {
         if layer.is_empty() {
             return;
         }
@@ -243,6 +253,7 @@ impl Branch {
             next_layer_size -= node.leaves.len() + node.children.len();
 
             node.inline = false;
+            node.format.get_or_insert_with(|| format.clone());
             node.format_attr_set_whitespace(leaves);
             node.format_attr_set(leaves);
         }
@@ -257,7 +268,7 @@ impl Branch {
             .filter(|x| x.inline)
             .flat_map(|x| x.children.iter_mut())
             .collect();
-        Self::format_layer(next_layer, max_leaves, leaves);
+        Self::format_layer(next_layer, max_leaves, format.subset_format(), leaves);
     }
 
     fn format_attr_set_whitespace(&mut self, leaves: &mut Vec<Leaf>) {
@@ -312,25 +323,19 @@ impl Branch {
         }
     }
 
-    fn print_attr_set(
-        &self,
-        recursive: bool,
-        leaves: &Vec<Leaf>,
-        format: Format,
-        file: &str,
-    ) -> (String, usize) {
+    fn print_attr_set(&self, recursive: bool, leaves: &Vec<Leaf>, file: &str) -> (String, usize) {
         let rec = if recursive { "rec " } else { "" };
 
         let mut attrs: Vec<_> = self
             .children
             .iter()
-            .flat_map(|x| x.print_attr(leaves, &format, file))
+            .flat_map(|x| x.print_attr(leaves, file))
             .chain(self.leaves.iter().map(|&i| leaves[i].print(i, file)))
             .collect();
         attrs.sort_unstable_by_key(|x| x.2);
 
         let position = attrs.first().map(|x| x.2).unwrap_or(0);
-        let text = match &format {
+        let text = match self.format.as_ref().unwrap() {
             Format::Inline(indentation) => {
                 let body = attrs
                     .into_iter()
@@ -353,21 +358,16 @@ impl Branch {
         (text, position)
     }
 
-    fn print_attr(
-        &self,
-        leaves: &Vec<Leaf>,
-        format: &Format,
-        file: &str,
-    ) -> Vec<(String, bool, usize)> {
+    fn print_attr(&self, leaves: &Vec<Leaf>, file: &str) -> Vec<(String, bool, usize)> {
         if !self.inline {
-            let (value, i) = self.print_attr_set(false, leaves, format.subset_format(), file);
+            let (value, position) = self.print_attr_set(false, leaves, file);
             let text = format!("{} = {value};", self.key_text);
-            return vec![(text, self.before_empty_line, i)];
+            return vec![(text, self.before_empty_line, position)];
         }
 
         self.children
             .iter()
-            .flat_map(|x| x.print_attr(leaves, &format, file))
+            .flat_map(|x| x.print_attr(leaves, file))
             .chain(self.leaves.iter().map(|&i| leaves[i].print(i, file)))
             .map(|x| (format!("{}.{}", self.key_text, x.0), x.1, x.2))
             .collect()

@@ -92,11 +92,11 @@ impl AttrTree {
 }
 
 impl Branch {
-    fn new(key: Option<String>, key_text: String) -> Self {
+    fn new(key: Option<String>, key_text: String, inline: bool) -> Self {
         Self {
             key,
             key_text,
-            inline: true,
+            inline,
             before_empty_line: false,
             leaves: Vec::new(),
             children: Vec::new(),
@@ -104,7 +104,7 @@ impl Branch {
     }
 
     fn from_attr_set(attr_set: AttrSet, leaves: &mut Vec<Leaf>) -> Self {
-        let mut root = Self::new(None, String::new());
+        let mut root = Self::new(None, String::new(), false);
 
         let mut elements = attr_set
             .syntax()
@@ -155,6 +155,7 @@ impl Branch {
         {
             let subtree = Self::from_attr_set(attr_set, leaves);
             let leaf = leaf_parent.children.last_mut().unwrap();
+            leaf.inline = false;
             leaf.leaves = subtree.leaves;
             leaf.children = subtree.children;
         } else {
@@ -166,7 +167,7 @@ impl Branch {
     }
 
     fn from_attr_path(attr_path: Attrpath) -> Self {
-        let mut root = Self::new(None, String::new());
+        let mut root = Self::new(None, String::new(), true);
         let mut parent = &mut root;
 
         for attr in attr_path.attrs() {
@@ -178,7 +179,7 @@ impl Branch {
                     InterpolPart::Interpolation(_) => None,
                 }),
             };
-            let node = Self::new(key, attr.to_string());
+            let node = Self::new(key, attr.to_string(), true);
             parent.children.push(node);
 
             parent = &mut parent.children[0];
@@ -191,6 +192,7 @@ impl Branch {
         let mut i = 0;
         while i < self.children.len() {
             let branch = &mut self.children[i];
+            branch.inline = true;
 
             let key = branch.key.clone();
             if key.is_none() {

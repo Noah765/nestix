@@ -290,6 +290,9 @@ impl Branch {
                 branch.format = None;
             }
             for x in children {
+                if !x.inline {
+                    branch.before_empty_line = x.before_empty_line;
+                }
                 branch.comments_above.extend(x.comments_above);
                 branch.leaves.extend(x.leaves);
                 branch.children.extend(x.children);

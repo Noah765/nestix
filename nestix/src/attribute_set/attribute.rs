@@ -1,7 +1,11 @@
 use rnix::ast::{AttrpathValue, Expr};
 use rowan::ast::AstNode;
 
-use crate::{attribute_set::format::AttributeSetFormat, comment::Comment, parser::Parser};
+use crate::{
+    attribute_set::{AttributeSet, Element, Node, format::AttributeSetFormat},
+    comment::Comment,
+    parser::Parser,
+};
 
 /// An Nix attribute set attribute.
 ///
@@ -34,10 +38,14 @@ impl Attribute {
     /// `comments_right`, as well as the attribute's subtree in the attribute
     /// tree, in that order.
     pub fn construct(
-        nodes: &mut Vec<Attribute>,
+        nodes: &mut Vec<Node>,
+        group: &mut usize,
         node: AttrpathValue,
+        mut comments_above: Vec<Comment>,
         comments_right: Vec<Comment>,
     ) {
+        let first_index = nodes.len();
+
         let mut parser = Parser::new(node.syntax().clone());
         let mut path_parser = Parser::new(parser.next_attribute_path().syntax().clone());
 
@@ -45,24 +53,30 @@ impl Attribute {
             let mut comments_above = path_parser.next_comments();
             let name = path_parser.next_attribute().to_string();
             comments_above.extend(path_parser.next_comments());
-            // TODO Use comments_above
 
-            nodes.push(Self {
-                name,
-                comments_before_equal: Vec::new(),
-                comments_after_equal: Vec::new(),
-                comments_right: Vec::new(),
-                value: AttributeValue::AttributeSet {
-                    inline: true,
-                    format: None,
-                    roots: vec![nodes.len() + 1],
-                },
+            nodes.push(Node {
+                group: *group,
+                comments_above,
+                value: Element::Attribute(Self {
+                    name,
+                    comments_before_equal: Vec::new(),
+                    comments_after_equal: Vec::new(),
+                    comments_right: Vec::new(),
+                    value: AttributeValue::AttributeSet {
+                        inline: true,
+                        format: None,
+                        roots: vec![nodes.len() + 1],
+                    },
+                }),
             });
 
             path_parser.next();
         }
 
-        let last = nodes.last_mut().expect("`nodes` should not be empty");
+        comments_above.append(&mut nodes[first_index].comments_above);
+        nodes[first_index].comments_above = comments_above;
+
+        let last = AttributeSet::get_attribute_mut(nodes, nodes.len() - 1);
 
         last.comments_before_equal = parser.next_comments();
         parser.next();
@@ -82,12 +96,18 @@ mod tests {
 
     use super::*;
 
-    fn parse_string_to_attribute(input: &str, comments_right: Vec<&str>) -> Vec<Attribute> {
+    fn parse_string_to_attribute(
+        input: &str,
+        comments_above: Vec<&str>,
+        comments_right: Vec<&str>,
+    ) -> Vec<Node> {
         let mut nodes = Vec::new();
         match Root::parse(input).ok().unwrap().expr().unwrap() {
             Expr::AttrSet(x) => Attribute::construct(
                 &mut nodes,
+                &mut 0,
                 x.attrpath_values().next().unwrap(),
+                comments_above.into_iter().map(Comment::new).collect(),
                 comments_right.into_iter().map(Comment::new).collect(),
             ),
             _ => panic!(),
@@ -97,10 +117,33 @@ mod tests {
 
     #[test]
     fn construct() {
-        let attributes = parse_string_to_attribute(
-            "{attr1/*before*/./*after*/\"attr2\"/*before next*/.${attr3}.\"attr${\"\"}4\"/*before equal*/=/*after equal*/(true)/*before*/;/*Right*/}",
+        let nodes = parse_string_to_attribute(
+            "{/*Above*/attr1/*before*/./*after*/\"attr2\"/*before next*/.${attr3}./*before*/\"attr${\"\"}4\"/*before equal*/=/*after equal*/(true)/*before*/;/*Right*/}",
+            vec!["/*Above*/"],
             vec!["/*Right*/"],
         );
+
+        assert_eq!(
+            nodes[0].comments_above,
+            [Comment::new("/*Above*/"), Comment::new("/*before*/")]
+        );
+        assert_eq!(
+            nodes[1].comments_above,
+            [Comment::new("/*after*/"), Comment::new("/*before next*/")]
+        );
+        assert_eq!(nodes[2].comments_above, Vec::new());
+        assert_eq!(nodes[3].comments_above, vec![Comment::new("/*before*/")]);
+
+        let attributes: Vec<_> = nodes
+            .into_iter()
+            .map(|x| match x {
+                Node {
+                    value: Element::Attribute(x),
+                    ..
+                } => x,
+                _ => panic!(),
+            })
+            .collect();
 
         match &attributes[..] {
             [

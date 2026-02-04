@@ -1,6 +1,6 @@
 use std::{
     fmt::{self, Debug, Formatter},
-    fs, iter,
+    fs, iter, mem,
 };
 
 use rnix::{
@@ -98,7 +98,7 @@ impl AttrTree {
     }
 
     fn normalize(&mut self) {
-        self.root.normalize();
+        self.root.normalize(&mut self.leaves);
     }
 
     fn format(&mut self) {
@@ -269,21 +269,34 @@ impl Branch {
         root.children.into_iter().next().unwrap()
     }
 
-    fn normalize(&mut self) {
+    fn normalize(&mut self, leaves: &mut Vec<Leaf>) {
         let mut i = 0;
         while i < self.children.len() {
             let branch = &mut self.children[i];
             branch.inline = true;
 
-            let key = branch.key.clone();
-            if key.is_none() {
+            let Some(key) = branch.key.clone() else {
                 i += 1;
                 continue;
+            };
+
+            let empty_attr_set_leaves: Vec<_> = self
+                .leaves
+                .extract_if(.., |i| match &leaves[*i] {
+                    Leaf::Node {
+                        key_text, value, ..
+                    } => *key_text == key && matches!(value, Expr::AttrSet(_)),
+                    Leaf::Comment { .. } => false,
+                })
+                .collect();
+            for &i in empty_attr_set_leaves.iter() {
+                leaves[i] = leaves[i].empty_attr_set_to_comment();
             }
+            branch.comments_above.extend(empty_attr_set_leaves);
 
             let children: Vec<_> = self
                 .children
-                .extract_if(i + 1.., |x| x.key == key)
+                .extract_if(i + 1.., |x| x.key.as_ref() == Some(&key))
                 .collect();
             let branch = &mut self.children[i];
             if !children.is_empty() {
@@ -298,7 +311,7 @@ impl Branch {
                 branch.children.extend(x.children);
             }
 
-            branch.normalize();
+            branch.normalize(leaves);
 
             i += 1;
         }
@@ -419,7 +432,7 @@ impl Branch {
             .collect();
         elements.sort_unstable_by_key(|x| x.3);
 
-        let position = elements.first().map(|x| x.3).unwrap_or(0);
+        let position = elements.first().unwrap().3;
         let text = match self.format.as_ref().unwrap() {
             Format::Inline(indentation) => {
                 let body = elements
@@ -465,11 +478,14 @@ impl Branch {
                 .map(|x| (x.0, x.1.map(|x| format!("{}.{x}", self.key_text)), x.2, x.3))
                 .collect()
         } else {
-            let comments_above = self
+            let mut comments_above: Vec<_> = self
                 .comments_above
                 .iter()
-                .flat_map(|&i| leaves[i].print(i, file).0)
+                .map(|&i| leaves[i].print(i, file))
                 .collect();
+            comments_above.sort_by_key(|x| x.3);
+            let comments_above = comments_above.into_iter().flat_map(|x| x.0).collect();
+
             let (value, position) = self.print_attr_set(false, leaves, file);
             let text = format!("{} = {value};", self.key_text);
             vec![(comments_above, Some(text), self.before_empty_line, position)]
@@ -534,6 +550,16 @@ impl Leaf {
             .map(|x| String::from(x.strip_prefix(&indentation).unwrap_or(x)))
             .chain(iter::once(String::from(lines.last().unwrap().trim_start())))
             .collect()
+    }
+
+    fn empty_attr_set_to_comment(&mut self) -> Self {
+        match self {
+            Self::Node { comments_above, .. } => Self::Comment {
+                lines: mem::take(comments_above),
+                before_empty_line: false,
+            },
+            Self::Comment { .. } => panic!(),
+        }
     }
 
     fn before_empty_line(&self) -> bool {

@@ -273,7 +273,12 @@ impl Branch {
         let mut i = 0;
         while i < self.children.len() {
             let branch = &mut self.children[i];
+            if !branch.inline && branch.before_empty_line {
+                let last_leaf = branch.last_leaf(leaves);
+                *leaves[last_leaf].before_empty_line_mut() = true;
+            }
             branch.inline = true;
+            branch.before_empty_line = false;
 
             let Some(key) = branch.key.clone() else {
                 i += 1;
@@ -303,8 +308,9 @@ impl Branch {
                 branch.format = None;
             }
             for x in children {
-                if !x.inline {
-                    branch.before_empty_line = x.before_empty_line;
+                if !x.inline && x.before_empty_line {
+                    let last_leaf = x.last_leaf(leaves);
+                    *leaves[last_leaf].before_empty_line_mut() = true
                 }
                 branch.comments_above.extend(x.comments_above);
                 branch.leaves.extend(x.leaves);
@@ -315,6 +321,15 @@ impl Branch {
 
             i += 1;
         }
+    }
+
+    fn last_leaf(&self, leaves: &Vec<Leaf>) -> usize {
+        self.leaves
+            .iter()
+            .copied()
+            .chain(self.children.iter().map(|x| x.last_leaf(leaves)))
+            .max()
+            .unwrap()
     }
 
     fn format_attr_set(&mut self, leaves: &mut Vec<Leaf>) {
@@ -374,27 +389,32 @@ impl Branch {
         node_leaves.sort_unstable();
 
         let mut section_start = node_leaves[0];
-        let mut first_section_end = None;
-        let mut multiple_separated_sections = false;
+        let mut passed_other_leave = false;
 
         for (current, next) in (0..node_leaves.len()).zip(1..node_leaves.len()) {
             let (current, next) = (node_leaves[current], node_leaves[next]);
 
-            if current + 1 == next {
+            if current + 1 == next && !leaves[current].before_empty_line() {
                 continue;
-            }
-
-            if first_section_end.is_none() {
-                first_section_end = Some(current);
             }
 
             if section_start != node_leaves[0] && leaves[current].before_empty_line() {
                 *leaves[section_start - 1].before_empty_line_mut() = true;
             }
 
-            if (current..next).any(|i| leaves[i].before_empty_line()) {
+            if leaves[current].before_empty_line() && passed_other_leave {
+                self.before_empty_line = true;
+            }
+
+            if current + 1 != next {
+                passed_other_leave = true;
+            }
+
+            if (current + 1..next).any(|i| leaves[i].before_empty_line()) {
                 *leaves[current].before_empty_line_mut() = true;
-                multiple_separated_sections = true;
+                if passed_other_leave {
+                    self.before_empty_line = true;
+                }
             }
 
             section_start = next;
@@ -406,10 +426,9 @@ impl Branch {
             *leaves[section_start - 1].before_empty_line_mut() = true;
         }
 
-        *leaves[*node_leaves.last().unwrap()].before_empty_line_mut() = false;
-
-        let first_section_end = first_section_end.unwrap_or_else(|| *node_leaves.last().unwrap());
-        if multiple_separated_sections || leaves[first_section_end].before_empty_line() {
+        let before_empty_line = leaves[*node_leaves.last().unwrap()].before_empty_line_mut();
+        if *before_empty_line {
+            *before_empty_line = false;
             self.before_empty_line = true;
         }
     }
@@ -488,6 +507,7 @@ impl Branch {
 
             let (value, position) = self.print_attr_set(false, leaves, file);
             let text = format!("{} = {value};", self.key_text);
+
             vec![(comments_above, Some(text), self.before_empty_line, position)]
         }
     }

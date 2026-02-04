@@ -1,8 +1,3 @@
-[package]
-name = "nestix"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-rnix = "0.12.0"
-rowan = "0.15.17"
+[workspace]
+resolver = "3"
+members = ["nestix", "nestix_cli"]

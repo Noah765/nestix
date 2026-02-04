@@ -1,0 +1,11 @@
+[package]
+name = "nestix"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rnix = "0.13.0"
+rowan = "0.16.1"
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"

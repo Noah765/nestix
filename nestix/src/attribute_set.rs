@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rnix::{
     SyntaxElement, SyntaxKind,
     ast::{self, AttrSet, AttrpathValue},
@@ -139,6 +141,53 @@ impl AttributeSet {
             _ => panic!("node at index {index} should be an attribute"),
         }
     }
+
+    /// Merges nested non-recursive attribute sets with the same path.
+    pub fn normalize(&mut self) {
+        if Self::normalize_nodes(&mut self.nodes, &mut self.roots) {
+            self.format = AttributeSetFormat::Multiline;
+        }
+    }
+
+    /// Merges nested non-recursive attribute sets with the same path under
+    /// `nodes`.
+    /// Returns `true` if `roots` contains any attribute sets in multiline
+    /// format that were not previously in that format.
+    fn normalize_nodes(nodes: &mut Vec<Node>, roots: &mut Vec<usize>) -> bool {
+        let mut contains_new_multiline = false;
+        let mut branches = HashMap::new();
+        let mut i = 0;
+
+        while i < roots.len() {
+            let Element::Attribute(x) = &nodes[roots[i]].value else {
+                i += 1;
+                continue;
+            };
+
+            let Some(&first) = branches.get(x.name()) else {
+                branches.insert(String::from(x.name()), roots[i]);
+                i += 1;
+                continue;
+            };
+
+            if Attribute::merge(nodes, first, roots[i]) {
+                contains_new_multiline = true;
+                match &mut nodes[first].value {
+                    Element::Attribute(x) => x.set_format_multiline(),
+                    _ => panic!("node at index {i} should be an attribute"),
+                }
+            }
+            roots.remove(i);
+        }
+
+        for (_, i) in branches {
+            if Attribute::normalize(nodes, i) {
+                contains_new_multiline = true;
+            }
+        }
+
+        contains_new_multiline
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +287,19 @@ mod tests {
         let set = parse_string_to_set(
             "{attr1 = true; attr2 = {attr3 = true;\nattr4 = true;}; attr5 = {attr6 = true;};}",
         );
+        assert_eq!(set.format, AttributeSetFormat::Multiline);
+    }
+
+    #[test]
+    fn normalize() {
+        let mut set = parse_string_to_set(
+            "{attr1 = {attr2 = true;}; inherit; attr1 = {attr3.attr4 = true; attr3.attr5 = true;};}",
+        );
+        set.normalize();
+        assert_eq!(set.format, AttributeSetFormat::Multiline);
+
+        let mut set = parse_string_to_set("{attr1 = {attr4.attr5 = true; attr4.attr6 = true;};}");
+        set.normalize();
         assert_eq!(set.format, AttributeSetFormat::Multiline);
     }
 }

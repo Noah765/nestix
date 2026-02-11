@@ -37,13 +37,15 @@ impl Attribute {
     /// Extends `nodes` by an attribute constructed from `node` and
     /// `comments_right`, as well as the attribute's subtree in the attribute
     /// tree, in that order.
+    /// Returns `true` if the value of `node` is a non-recursive attribute set
+    /// in multiline format.
     pub fn construct(
         nodes: &mut Vec<Node>,
         group: &mut usize,
         node: AttrpathValue,
         mut comments_above: Vec<Comment>,
         comments_right: Vec<Comment>,
-    ) {
+    ) -> bool {
         let first_index = nodes.len();
 
         let mut parser = Parser::new(node.syntax().clone());
@@ -76,16 +78,38 @@ impl Attribute {
         comments_above.append(&mut nodes[first_index].comments_above);
         nodes[first_index].comments_above = comments_above;
 
-        let last = AttributeSet::get_attribute_mut(nodes, nodes.len() - 1);
+        let last_index = nodes.len() - 1;
+        let last = AttributeSet::get_attribute_mut(nodes, last_index);
 
         last.comments_before_equal = parser.next_comments();
         parser.next();
         last.comments_after_equal = parser.next_comments();
 
-        last.value = AttributeValue::Expression(parser.next_expression()); // TODO Support attribute set values.
+        let value = parser.next_expression();
+        let mut unwrapped_value = value.clone();
+        while let Expr::Paren(x) = unwrapped_value {
+            unwrapped_value = x.expr().unwrap();
+        }
+        let (value, contains_multiline) = match unwrapped_value {
+            Expr::AttrSet(x) if x.rec_token().is_none() => {
+                let (format, roots) = AttributeSet::construct(nodes, group, x);
+                let contains_multiline = format == AttributeSetFormat::Multiline;
+                let value = AttributeValue::AttributeSet {
+                    inline: false,
+                    format: Some(format),
+                    roots,
+                };
+                (value, contains_multiline)
+            }
+            _ => (AttributeValue::Expression(value), false),
+        };
+        let last = AttributeSet::get_attribute_mut(nodes, last_index);
+        last.value = value;
 
         last.comments_right = parser.next_comments();
         last.comments_right.extend(comments_right);
+
+        contains_multiline
     }
 }
 
@@ -100,9 +124,9 @@ mod tests {
         input: &str,
         comments_above: Vec<&str>,
         comments_right: Vec<&str>,
-    ) -> Vec<Node> {
+    ) -> (Vec<Node>, bool) {
         let mut nodes = Vec::new();
-        match Root::parse(input).ok().unwrap().expr().unwrap() {
+        let contains_multiline = match Root::parse(input).ok().unwrap().expr().unwrap() {
             Expr::AttrSet(x) => Attribute::construct(
                 &mut nodes,
                 &mut 0,
@@ -111,13 +135,13 @@ mod tests {
                 comments_right.into_iter().map(Comment::new).collect(),
             ),
             _ => panic!(),
-        }
-        nodes
+        };
+        (nodes, contains_multiline)
     }
 
     #[test]
-    fn construct() {
-        let nodes = parse_string_to_attribute(
+    fn construct_expression_value() {
+        let (nodes, _) = parse_string_to_attribute(
             "{/*Above*/attr1/*before*/./*after*/\"attr2\"/*before next*/.${attr3}./*before*/\"attr${\"\"}4\"/*before equal*/=/*after equal*/(true)/*before*/;/*Right*/}",
             vec!["/*Above*/"],
             vec!["/*Right*/"],
@@ -214,5 +238,126 @@ mod tests {
             }
             _ => panic!("{attributes:#?}"),
         }
+    }
+
+    #[test]
+    fn construct_empty_attribute_set_value() {
+        let (nodes, _) = parse_string_to_attribute("{attr1 = {};}", Vec::new(), Vec::new());
+
+        match &nodes[..] {
+            [
+                Node {
+                    group: 0,
+                    comments_above: _,
+                    value:
+                        Element::Attribute(Attribute {
+                            name,
+                            value:
+                                AttributeValue::AttributeSet {
+                                    inline: false,
+                                    format: Some(AttributeSetFormat::Inline { .. }),
+                                    roots,
+                                },
+                            ..
+                        }),
+                },
+            ] => {
+                assert_eq!(name.to_string(), "attr1");
+                assert_eq!(roots, &[]);
+            }
+            _ => panic!("{nodes:#?}"),
+        }
+    }
+
+    #[test]
+    fn construct_filled_attribute_set_value() {
+        let (nodes, _) = parse_string_to_attribute(
+            "{attr1 = (({attr2 = true; attr3 = true;}));}",
+            Vec::new(),
+            Vec::new(),
+        );
+
+        match &nodes[..] {
+            [
+                Node {
+                    group: 0,
+                    comments_above: _,
+                    value:
+                        Element::Attribute(Attribute {
+                            name: first_name,
+                            value:
+                                AttributeValue::AttributeSet {
+                                    inline: false,
+                                    format: Some(AttributeSetFormat::Inline { .. }),
+                                    roots,
+                                },
+                            ..
+                        }),
+                },
+                Node {
+                    group: 0,
+                    comments_above: _,
+                    value:
+                        Element::Attribute(Attribute {
+                            name: second_name,
+                            value: AttributeValue::Expression(first_value),
+                            ..
+                        }),
+                },
+                Node {
+                    group: 0,
+                    comments_above: _,
+                    value:
+                        Element::Attribute(Attribute {
+                            name: third_name,
+                            value: AttributeValue::Expression(second_value),
+                            ..
+                        }),
+                },
+            ] => {
+                assert_eq!(first_name, "attr1");
+                assert_eq!(second_name, "attr2");
+                assert_eq!(third_name, "attr3");
+                assert_eq!(roots, &[1, 2]);
+                assert_eq!(first_value.to_string(), "true");
+                assert_eq!(second_value.to_string(), "true");
+            }
+            _ => panic!("{nodes:#?}"),
+        }
+    }
+
+    #[test]
+    fn construct_recursive_attribute_set_value() {
+        let (nodes, _) =
+            parse_string_to_attribute("{attr1 = rec {attr2 = true;};}", Vec::new(), Vec::new());
+
+        match &nodes[..] {
+            [
+                Node {
+                    group: 0,
+                    comments_above: _,
+                    value:
+                        Element::Attribute(Attribute {
+                            value: AttributeValue::Expression(value),
+                            ..
+                        }),
+                },
+            ] => {
+                assert_eq!(value.to_string(), "rec {attr2 = true;}");
+            }
+            _ => panic!("{nodes:#?}"),
+        }
+    }
+
+    #[test]
+    fn construct_return_value() {
+        fn test(input: &str, expected: bool) {
+            let (_, contains_multiline) = parse_string_to_attribute(input, Vec::new(), Vec::new());
+            assert_eq!(contains_multiline, expected, "{input}");
+        }
+        test("{attr1 = {\n  attr2 = true;\n};}", true);
+        test("{attr1 = {attr2 = true;};}", false);
+        test("{attr1 = rec {\n  attr2 = true;\n};}", false);
+        test("{attr1 = true;}", false);
     }
 }

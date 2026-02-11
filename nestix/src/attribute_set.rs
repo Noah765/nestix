@@ -71,6 +71,7 @@ impl AttributeSet {
         group: &mut usize,
         node: AttrSet,
     ) -> (AttributeSetFormat, Vec<usize>) {
+        let mut is_multiline = false;
         let mut roots = Vec::new();
 
         let mut parser = Parser::new(node.syntax().clone());
@@ -108,7 +109,9 @@ impl AttributeSet {
                 });
             } else {
                 let node = AttrpathValue::cast(node).expect("`node` should be an attribute node");
-                Attribute::construct(nodes, group, node, comments, parser.next_comment_line());
+                if Attribute::construct(nodes, group, node, comments, parser.next_comment_line()) {
+                    is_multiline = true;
+                }
             }
 
             if parser.next_whitespace().matches('\n').nth(1).is_some() {
@@ -116,7 +119,12 @@ impl AttributeSet {
             }
         }
 
-        (AttributeSetFormat::new(node), roots)
+        let format = if is_multiline {
+            AttributeSetFormat::Multiline
+        } else {
+            AttributeSetFormat::new(node)
+        };
+        (format, roots)
     }
 
     /// Returns a mutable reference to the attribute at index `index`.
@@ -215,5 +223,21 @@ mod tests {
             }
             _ => panic!("{set:#?}"),
         }
+    }
+
+    #[test]
+    fn new_format() {
+        let set = parse_string_to_set("{ attr1 = true; attr2 = {attr3 = true; attr4 = true;}; }");
+        assert_eq!(
+            set.format,
+            AttributeSetFormat::Inline {
+                surrounding_whitespace: String::from(" ")
+            }
+        );
+
+        let set = parse_string_to_set(
+            "{attr1 = true; attr2 = {attr3 = true;\nattr4 = true;}; attr5 = {attr6 = true;};}",
+        );
+        assert_eq!(set.format, AttributeSetFormat::Multiline);
     }
 }

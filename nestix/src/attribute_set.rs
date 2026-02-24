@@ -129,6 +129,19 @@ impl AttributeSet {
         (format, roots)
     }
 
+    /// Returns an immutable reference to the attribute at index `index`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is invalid or the node at that index is not an
+    /// attribute.
+    fn get_attribute(nodes: &Vec<Node>, index: usize) -> &Attribute {
+        match &nodes[index].value {
+            Element::Attribute(x) => x,
+            _ => panic!("node at index {index} should be an attribute"),
+        }
+    }
+
     /// Returns a mutable reference to the attribute at index `index`.
     ///
     /// # Panics
@@ -187,6 +200,83 @@ impl AttributeSet {
         }
 
         contains_new_multiline
+    }
+
+    /// Formats this attribute set.
+    pub fn format(&mut self) {
+        self.normalize();
+        Self::format_roots(&mut self.nodes, &self.roots);
+    }
+
+    /// Formats the given attribute set roots.
+    fn format_roots(nodes: &mut Vec<Node>, roots: &Vec<usize>) {
+        for &i in roots {
+            if let Element::Attribute(x) = &nodes[i].value
+                && x.is_branch()
+            {
+                Self::format_layer(nodes, vec![i], 2);
+            }
+        }
+    }
+
+    /// Expands inline branch attribute sets in `layer` until the next attribute
+    /// tree layer contains at most `max_leaves` attributes. Additionally,
+    /// expands attribute sets in `layer` which contain an inherit node.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any index in `layer` points to a non-attribute node or
+    /// an attribute whose value is not an attribute set. Also panics if
+    /// `layer.len() > max_leaves`.
+    fn format_layer(nodes: &mut Vec<Node>, layer: Vec<usize>, mut max_leaves: usize) {
+        if layer.is_empty() {
+            return;
+        }
+
+        for &i in &layer {
+            if Self::get_attribute(nodes, i).contains_inherit(nodes) {
+                *Self::get_attribute_mut(nodes, i).inline_mut() = false;
+                Attribute::format(nodes, i);
+                max_leaves -= 1;
+            }
+        }
+
+        let layer: Vec<_> = layer
+            .iter()
+            .filter_map(|&i| {
+                let x = Self::get_attribute(nodes, i);
+                x.inline().then(|| (i, x.count_nested_attributes(nodes)))
+            })
+            .collect();
+
+        let mut next_layer_size: usize = layer.iter().map(|x| x.1).sum();
+
+        while next_layer_size > max_leaves {
+            let &(i, size) = layer
+                .iter()
+                .filter(|x| Self::get_attribute(nodes, x.0).inline())
+                .max_by_key(|x| x.1)
+                .expect("`next_layer_size <= max_leaves` should be reachable");
+            let x = Self::get_attribute_mut(nodes, i);
+
+            *x.inline_mut() = false;
+            Attribute::format(nodes, i);
+
+            max_leaves -= 1;
+            next_layer_size -= size;
+        }
+
+        let (next_layer, leaves_count) = layer
+            .into_iter()
+            .filter(|x| Self::get_attribute(nodes, x.0).inline())
+            .map(|x| Self::get_attribute(nodes, x.0).get_nested_branches_and_leave_count(nodes))
+            .fold((Vec::new(), 0), |mut acc, x| {
+                acc.0.extend(x.0);
+                acc.1 += x.1;
+                acc
+            });
+        max_leaves -= leaves_count;
+        Self::format_layer(nodes, next_layer, max_leaves);
     }
 }
 
@@ -301,5 +391,63 @@ mod tests {
         let mut set = parse_string_to_set("{attr1 = {attr4.attr5 = true; attr4.attr6 = true;};}");
         set.normalize();
         assert_eq!(set.format, AttributeSetFormat::Multiline);
+    }
+
+    #[test]
+    fn format() {
+        fn test(input: &str, expected: Vec<bool>) {
+            let mut set = parse_string_to_set(input);
+            set.format();
+            let got: Vec<_> = set
+                .nodes
+                .into_iter()
+                .filter_map(|x| match x.value {
+                    Element::Attribute(x) if x.is_branch() => Some(x.inline()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(got, expected, "{input}");
+        }
+        test(
+            "{attr1 = {attr2 = {attr3 = true; attr4 = true;}; # Comment\n\nattr5 = {};};}",
+            vec![true, false],
+        );
+        test(
+            "{attr1 = {attr2 = {attr3 = true; attr4 = true;}; inherit; attr5 = {};};}",
+            vec![false, true],
+        );
+        test(
+            "{attr1 = {attr2 = {attr3 = true; attr4 = true;}; attr5 = {inherit;};};}",
+            vec![true, false, false],
+        );
+        test(
+            "{attr1 = {attr2.attr3 = true; attr4 = {attr5 = true; attr6 = true;};};}",
+            vec![true, true, false],
+        );
+        test(
+            "{attr1 = {inherit; attr2 = {attr3 = true; attr4 = true; attr5 = true;};};}",
+            vec![false, false],
+        );
+    }
+
+    #[test]
+    #[should_panic = "should be an attribute"]
+    fn format_layer_invalid_non_attributes() {
+        let mut set = parse_string_to_set("{/*Comment*/}");
+        AttributeSet::format_layer(&mut set.nodes, vec![0], 2);
+    }
+
+    #[test]
+    #[should_panic = "should be an attribute set"]
+    fn format_layer_invalid_non_attribute_sets() {
+        let mut set = parse_string_to_set("{attr1 = true;}");
+        AttributeSet::format_layer(&mut set.nodes, vec![0], 2);
+    }
+
+    #[test]
+    #[should_panic = "attempt to subtract with overflow"]
+    fn format_layer_invalid_max_leaves() {
+        let mut set = parse_string_to_set("{attr1 = {attr2.attr3 = true; attr4.attr5 = true;};}");
+        AttributeSet::format_layer(&mut set.nodes, vec![1, 3], 1);
     }
 }

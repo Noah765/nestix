@@ -225,6 +225,115 @@ impl Attribute {
             AttributeValue::Expression(_) => panic!("attribute's value should be an attribute set"),
         }
     }
+
+    /// Formats the attribute at `index`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the node at `index` is not an attribute.
+    pub(super) fn format(nodes: &mut Vec<Node>, index: usize) {
+        match &AttributeSet::get_attribute(nodes, index).value {
+            AttributeValue::AttributeSet { roots, .. } => {
+                AttributeSet::format_roots(nodes, &roots.clone());
+            }
+            AttributeValue::Expression(_) => {}
+        }
+    }
+
+    /// Returns `true` if this attribute's attribute set is inline.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this attribute's value is not an attribute set.
+    pub(super) fn inline(&self) -> bool {
+        match self.value {
+            AttributeValue::AttributeSet { inline, .. } => inline,
+            AttributeValue::Expression(_) => panic!("attribute's value should be an attribute set"),
+        }
+    }
+
+    /// Returns a mutable reference to the inline property of this attribute's
+    /// attribute set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this attribute's value is not an attribute set.
+    pub(super) fn inline_mut(&mut self) -> &mut bool {
+        match &mut self.value {
+            AttributeValue::AttributeSet { inline, .. } => inline,
+            AttributeValue::Expression(_) => panic!("attribute's value should be an attribute set"),
+        }
+    }
+
+    /// Returns `true` if this attribute is a branch in the attribute tree.
+    pub(super) fn is_branch(&self) -> bool {
+        match &self.value {
+            AttributeValue::AttributeSet { roots, .. } => !roots.is_empty(),
+            AttributeValue::Expression(_) => false,
+        }
+    }
+
+    /// Returns `true` if this attribute's attribute set contains an inherit
+    /// node.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this attribute's value is not an attribute set.
+    pub(super) fn contains_inherit(&self, nodes: &Vec<Node>) -> bool {
+        match &self.value {
+            AttributeValue::AttributeSet { roots, .. } => roots
+                .into_iter()
+                .any(|&i| matches!(nodes[i].value, Element::Inherit(_))),
+            AttributeValue::Expression(_) => panic!("attribute's value should be an attribute set"),
+        }
+    }
+
+    /// Returns the number of attributes in this attribute's attribute set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this attribute's value is not an attribute set.
+    pub(super) fn count_nested_attributes(&self, nodes: &Vec<Node>) -> usize {
+        match &self.value {
+            AttributeValue::AttributeSet { roots, .. } => roots
+                .into_iter()
+                .filter(|&&i| matches!(nodes[i].value, Element::Attribute(_)))
+                .count(),
+            AttributeValue::Expression(_) => panic!("attribute's value should be an attribute set"),
+        }
+    }
+
+    /// Returns the branches and leave count of this attribute's nested
+    /// attribute tree.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this attribute's value is not an attribute set.
+    pub(super) fn get_nested_branches_and_leave_count(
+        &self,
+        nodes: &Vec<Node>,
+    ) -> (Vec<usize>, usize) {
+        let roots = match &self.value {
+            AttributeValue::AttributeSet { roots, .. } => roots,
+            AttributeValue::Expression(_) => panic!("attribute's value should be an attribute set"),
+        };
+
+        let mut branches = Vec::new();
+        let mut leave_count = 0;
+
+        for &i in roots {
+            let Element::Attribute(x) = &nodes[i].value else {
+                continue;
+            };
+            if x.is_branch() {
+                branches.push(i);
+            } else {
+                leave_count += 1;
+            }
+        }
+
+        (branches, leave_count)
+    }
 }
 
 #[cfg(test)]
@@ -803,5 +912,93 @@ mod tests {
     fn merge_invalid_second_value() {
         let mut nodes = parse_string_to_nodes("{attr1 = {}; attr2 = true;}");
         Attribute::merge(&mut nodes, 0, 1);
+    }
+
+    #[test]
+    fn is_branch() {
+        fn test(input: &str, expected: bool) {
+            let (nodes, _) = parse_string_to_attribute(input, Vec::new(), Vec::new());
+            match &nodes[0].value {
+                Element::Attribute(x) => assert_eq!(x.is_branch(), expected, "{input}"),
+                _ => panic!(),
+            };
+        }
+        test("{attr1 = true;}", false);
+        test("{attr1 = {};}", false);
+        test("{attr1 = {attr2 = true;};}", true);
+    }
+
+    #[test]
+    fn contains_inherit() {
+        fn test(input: &str, expected: bool) {
+            let (nodes, _) = parse_string_to_attribute(input, Vec::new(), Vec::new());
+            match &nodes[0].value {
+                Element::Attribute(x) => {
+                    assert_eq!(x.contains_inherit(&nodes), expected, "{input}")
+                }
+                _ => panic!(),
+            };
+        }
+        test("{attr1 = {attr2 = true; inherit;};}", true);
+        test("{attr1 = {attr2 = true;};}", false);
+        test("{attr1 = {};}", false);
+    }
+
+    #[test]
+    #[should_panic = "attribute's value should be an attribute set"]
+    fn contains_inherit_invalid() {
+        let (nodes, _) = parse_string_to_attribute("{attr1 = true;}", Vec::new(), Vec::new());
+        match &nodes[0].value {
+            Element::Attribute(x) => x.contains_inherit(&nodes),
+            _ => panic!(),
+        };
+    }
+
+    #[test]
+    fn count_nested_attributes() {
+        let (nodes, _) = parse_string_to_attribute(
+            "{attr1 = {inherit; attr2 = true; # Comment\n\nattr3 = true;};}",
+            Vec::new(),
+            Vec::new(),
+        );
+        match &nodes[0].value {
+            Element::Attribute(x) => assert_eq!(x.count_nested_attributes(&nodes), 2),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    #[should_panic = "attribute's value should be an attribute set"]
+    fn count_nested_attributes_invalid() {
+        let (nodes, _) = parse_string_to_attribute("{attr1 = true;}", Vec::new(), Vec::new());
+        match &nodes[0].value {
+            Element::Attribute(x) => x.count_nested_attributes(&nodes),
+            _ => panic!(),
+        };
+    }
+
+    #[test]
+    fn get_nested_branches_and_leave_count() {
+        let (nodes, _) = parse_string_to_attribute(
+            "{attr1 = {inherit; attr2 = true; attr3.attr4 = true; # Comment\n\nattr5 = true; attr6 = {};};}",
+            Vec::new(),
+            Vec::new(),
+        );
+        match &nodes[0].value {
+            Element::Attribute(x) => {
+                assert_eq!(x.get_nested_branches_and_leave_count(&nodes), (vec![3], 3))
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    #[should_panic = "attribute's value should be an attribute set"]
+    fn get_nested_branches_and_leave_count_invalid() {
+        let (nodes, _) = parse_string_to_attribute("{attr1 = true;}", Vec::new(), Vec::new());
+        match &nodes[0].value {
+            Element::Attribute(x) => x.get_nested_branches_and_leave_count(&nodes),
+            _ => panic!(),
+        };
     }
 }

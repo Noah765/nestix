@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::RangeInclusive};
 
 use rnix::{
     SyntaxElement, SyntaxKind,
@@ -9,6 +9,7 @@ use rowan::ast::AstNode;
 use crate::{
     attribute_set::{attribute::Attribute, format::AttributeSetFormat, inherit::Inherit},
     comment::Comment,
+    formatter::Formatter,
     parser::Parser,
 };
 
@@ -31,6 +32,7 @@ pub struct AttributeSet {
 
 #[derive(Clone, Debug)]
 struct Node {
+    indentation_level: usize,
     group: usize,
     comments_above: Vec<Comment>,
     value: Element,
@@ -44,8 +46,11 @@ enum Element {
 }
 
 impl AttributeSet {
-    /// Constructs a new `AttributeSet` based on `node`.
-    pub fn new(node: AttrSet) -> Self {
+    /// Constructs a new `AttributeSet` based on `node` and `indentation_level`.
+    ///
+    /// `indentation_level` is the syntax-tree indentation level of `node`. The
+    /// indentation level of an attribute set that is not indented is `0`.
+    pub fn new(node: AttrSet, indentation_level: usize) -> Self {
         let mut parser = Parser::new(node.syntax().clone());
         let (recursive, comments_after_rec) = match parser.next() {
             None => panic!("`node` should have children"),
@@ -55,7 +60,7 @@ impl AttributeSet {
 
         let mut nodes = Vec::new();
         let mut group = 0;
-        let (format, roots) = Self::construct(&mut nodes, &mut group, node);
+        let (format, roots) = Self::construct(&mut nodes, indentation_level, &mut group, node);
 
         Self {
             format,
@@ -70,6 +75,7 @@ impl AttributeSet {
     /// format of `node` as well as its root nodes.
     fn construct(
         nodes: &mut Vec<Node>,
+        indentation_level: usize,
         group: &mut usize,
         node: AttrSet,
     ) -> (AttributeSetFormat, Vec<usize>) {
@@ -91,6 +97,7 @@ impl AttributeSet {
             let SyntaxElement::Node(node) = element else {
                 roots.extend(nodes.len()..nodes.len() + comments.len());
                 nodes.extend(comments.into_iter().map(|x| Node {
+                    indentation_level: indentation_level + 1,
                     group: *group,
                     comments_above: Vec::new(),
                     value: Element::Comment(x),
@@ -105,13 +112,21 @@ impl AttributeSet {
                 let node = ast::Inherit::cast(node).unwrap();
                 let inherit = Inherit::new(node, parser.next_comment_line());
                 nodes.push(Node {
+                    indentation_level: indentation_level + 1,
                     group: *group,
                     comments_above: comments,
                     value: Element::Inherit(inherit),
                 });
             } else {
                 let node = AttrpathValue::cast(node).expect("`node` should be an attribute node");
-                if Attribute::construct(nodes, group, node, comments, parser.next_comment_line()) {
+                if Attribute::construct(
+                    nodes,
+                    indentation_level + 1,
+                    group,
+                    node,
+                    comments,
+                    parser.next_comment_line(),
+                ) {
                     is_multiline = true;
                 }
             }
@@ -278,6 +293,129 @@ impl AttributeSet {
         max_leaves -= leaves_count;
         Self::format_layer(nodes, next_layer, max_leaves);
     }
+
+    /// Writes this attribute set to the formatter using its current format.
+    pub fn print(&self, formatter: &mut Formatter) {
+        if self.recursive {
+            formatter.write("rec ");
+            for x in &self.comments_after_rec {
+                x.print(formatter);
+                formatter.write(" ");
+            }
+        }
+
+        Self::print_roots(formatter, &self.nodes, &self.roots, &self.format);
+    }
+
+    /// Writes the `roots` as an attribute set to `formatter` using `format` and
+    /// returns the group of the last nested attribute.
+    fn print_roots(
+        formatter: &mut Formatter,
+        nodes: &Vec<Node>,
+        roots: &Vec<usize>,
+        format: &AttributeSetFormat,
+    ) -> Option<usize> {
+        formatter.write("{");
+        match format {
+            AttributeSetFormat::Inline {
+                surrounding_whitespace,
+            } => formatter.write(surrounding_whitespace),
+            AttributeSetFormat::Multiline => formatter.increase_indentation(),
+        }
+
+        if roots.is_empty() {
+            if *format == AttributeSetFormat::Multiline {
+                formatter.decrease_indentation();
+                formatter.open_line()
+            }
+            formatter.write("}");
+            return None;
+        }
+
+        let mut elements: Vec<_> = roots
+            .iter()
+            .flat_map(|&i| Self::print_node_at(formatter, nodes, i))
+            .collect();
+        elements.sort_unstable_by_key(|x| x.0);
+
+        let last_group = elements.last().map(|x| *x.1.end());
+
+        match format {
+            AttributeSetFormat::Inline {
+                surrounding_whitespace,
+            } => {
+                let last_index = elements.len() - 1;
+                for (i, x) in elements.into_iter().enumerate() {
+                    for x in x.2 {
+                        x.print(formatter);
+                        formatter.write(" ");
+                    }
+                    formatter.write(&x.3);
+                    if i != last_index {
+                        formatter.write(" ");
+                    }
+                }
+
+                formatter.write(surrounding_whitespace);
+            }
+            AttributeSetFormat::Multiline => {
+                let mut group = *elements[0].1.start();
+                for x in elements {
+                    if group != *x.1.start() {
+                        formatter.write("\n");
+                    }
+                    group = *x.1.end();
+
+                    for x in x.2 {
+                        formatter.open_line();
+                        x.print(formatter);
+                    }
+
+                    formatter.open_line();
+                    formatter.write(&x.3);
+                }
+
+                formatter.decrease_indentation();
+                formatter.open_line();
+            }
+        }
+
+        formatter.write("}");
+
+        last_group
+    }
+
+    /// Returns the printed elements of the node at `index`, formatting
+    /// attribute values but not the surrounding attribute set.
+    fn print_node_at<'a>(
+        formatter: &Formatter,
+        nodes: &'a Vec<Node>,
+        index: usize,
+    ) -> Vec<(usize, RangeInclusive<usize>, Vec<&'a Comment>, String)> {
+        match &nodes[index].value {
+            Element::Inherit(x) => {
+                let mut formatter = formatter.child_formatter();
+                x.print(&mut formatter);
+                vec![(
+                    index,
+                    nodes[index].group..=nodes[index].group,
+                    nodes[index].comments_above.iter().collect(),
+                    formatter.into_string(),
+                )]
+            }
+            Element::Attribute(x) => x.print(formatter, nodes, index),
+            Element::Comment(x) => {
+                let mut formatter = formatter.child_formatter();
+                x.print(&mut formatter);
+                vec![(
+                    index,
+                    nodes[index].group..=nodes[index].group,
+                    nodes[index].comments_above.iter().collect(),
+                    formatter.into_string(),
+                )]
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -285,11 +423,13 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rnix::{Root, ast::Expr};
 
+    use crate::formatter::IndentationType;
+
     use super::*;
 
     fn parse_string_to_set(input: &str) -> AttributeSet {
         match Root::parse(input).ok().unwrap().expr().unwrap() {
-            Expr::AttrSet(x) => AttributeSet::new(x),
+            Expr::AttrSet(x) => AttributeSet::new(x, 0),
             _ => panic!(),
         }
     }
@@ -317,31 +457,37 @@ mod tests {
         match &set.nodes[..] {
             [
                 Node {
+                    indentation_level: 1,
                     group: 0,
                     comments_above: comments_above_first,
                     value: Element::Comment(_),
                 },
                 Node {
+                    indentation_level: 1,
                     group: 0,
                     comments_above: comments_above_second,
                     value: Element::Comment(_),
                 },
                 Node {
+                    indentation_level: 1,
                     group: 1,
                     comments_above: comments_above_third,
                     value: Element::Attribute(_),
                 },
                 Node {
+                    indentation_level: 1,
                     group: 1,
                     comments_above: comments_above_fourth,
                     value: Element::Attribute(_),
                 },
                 Node {
+                    indentation_level: 1,
                     group: 2,
                     comments_above: comments_above_fifth,
                     value: Element::Inherit(_),
                 },
                 Node {
+                    indentation_level: 1,
                     group: 2,
                     comments_above: comments_above_sixth,
                     value: Element::Comment(_),
@@ -449,5 +595,23 @@ mod tests {
     fn format_layer_invalid_max_leaves() {
         let mut set = parse_string_to_set("{attr1 = {attr2.attr3 = true; attr4.attr5 = true;};}");
         AttributeSet::format_layer(&mut set.nodes, vec![1, 3], 1);
+    }
+
+    #[test]
+    fn print() {
+        fn test(input: &str, expected: &str) {
+            let mut formatter = Formatter::new(IndentationType::TwoSpaces);
+            parse_string_to_set(input).print(&mut formatter);
+            assert_eq!(formatter.into_string(), expected, "{input}");
+        }
+        test("rec\n/*after*/\n{ }", "rec /*after*/ { }");
+        test(
+            "{attr1 = {\n};\n/*comment*/\n\nattr2 = true;}",
+            "{\n  attr1 = {\n  };\n  /*comment*/\n\n  attr2 = true;\n}",
+        );
+        test(
+            "{attr1 = true;\n\n\nattr2 = true;}",
+            "{\n  attr1 = true;\n\n  attr2 = true;\n}",
+        );
     }
 }

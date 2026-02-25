@@ -7,6 +7,7 @@ use rowan::ast::AstNode;
 use crate::{
     attribute_set::inherit::{attribute::InheritAttribute, format::InheritFormat},
     comment::Comment,
+    formatter::Formatter,
     parser::Parser,
 };
 
@@ -67,6 +68,56 @@ impl Inherit {
             attributes,
         }
     }
+
+    /// Writes this inherit node to `formatter`.
+    pub fn print(&self, formatter: &mut Formatter) {
+        formatter.write("inherit");
+        formatter.increase_indentation();
+
+        let separator = match self.format {
+            InheritFormat::Multiline {
+                from_on_separate_line,
+            } if from_on_separate_line => &formatter.line_separator(),
+            _ => " ",
+        };
+        for x in &self.comments_before_from {
+            formatter.write(separator);
+            x.print(formatter);
+        }
+        if let Some(x) = &self.from {
+            formatter.write(separator);
+            formatter.format_node(x.syntax().clone());
+        }
+        for x in &self.comments_right_of_from {
+            formatter.write(" ");
+            x.print(formatter);
+        }
+        for x in &self.comments_below_from {
+            formatter.open_line();
+            x.print(formatter);
+        }
+
+        let separator = match self.format {
+            InheritFormat::Inline => " ",
+            InheritFormat::Multiline { .. } => &formatter.line_separator(),
+        };
+        for x in &self.attributes {
+            formatter.write(separator);
+            x.print(formatter, &self.format);
+        }
+
+        if let InheritFormat::Multiline { .. } = self.format {
+            formatter.write(separator);
+        }
+        formatter.write(";");
+
+        for x in &self.comments_right {
+            formatter.write(" ");
+            x.print(formatter);
+        }
+
+        formatter.decrease_indentation();
+    }
 }
 
 #[cfg(test)]
@@ -76,6 +127,8 @@ mod tests {
         Root,
         ast::{Expr, HasEntry},
     };
+
+    use crate::formatter::IndentationType;
 
     use super::*;
 
@@ -121,6 +174,42 @@ mod tests {
             &[],
             &[],
             &[Comment::new("/* below */")],
+        );
+    }
+
+    #[test]
+    fn print() {
+        fn test(set: &str, expected: &str) {
+            let inherit = match Root::parse(set).ok().unwrap().expr().unwrap() {
+                Expr::AttrSet(x) => Inherit::new(x.inherits().next().unwrap(), Vec::new()),
+                _ => panic!(),
+            };
+            let mut formatter = Formatter::new(IndentationType::TwoSpaces);
+            inherit.print(&mut formatter);
+            assert_eq!(formatter.into_string(), expected, "{set}");
+        }
+
+        test("{inherit  ;}", "inherit;");
+        test(
+            "{inherit (from)\tattr1  attr2;}",
+            "inherit (from) attr1 attr2;",
+        );
+        test(
+            "{inherit/* before */(from)/* right */attr1/* attr1 */;}",
+            "inherit /* before */ (from) /* right */ attr1 /* attr1 */;",
+        );
+        test("{inherit\nattr1\nattr2;}", "inherit\n  attr1\n  attr2\n  ;");
+        test(
+            "{inherit (from)\n/* below */;}",
+            "inherit (from)\n  /* below */\n  ;",
+        );
+        test(
+            "{inherit/* before */(from)\nattr1 attr2\n;}",
+            "inherit /* before */ (from)\n  attr1\n  attr2\n  ;",
+        );
+        test(
+            "{inherit/* before */\n(from)# right\nattr1 attr2\n;}",
+            "inherit\n  /* before */\n  (from) # right\n  attr1\n  attr2\n  ;",
         );
     }
 }

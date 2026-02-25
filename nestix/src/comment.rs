@@ -1,5 +1,7 @@
 use std::iter;
 
+use crate::formatter::Formatter;
+
 /// A Nix comment.
 //
 // INVARIANT: !0.is_empty()
@@ -37,11 +39,23 @@ impl Comment {
 
         Self(lines)
     }
+
+    /// Writes this comment to `formatter`.
+    pub fn print(&self, formatter: &mut Formatter) {
+        formatter.write(&self.0[0]);
+
+        for x in &self.0[1..] {
+            formatter.open_line();
+            formatter.write(x);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
+
+    use crate::formatter::IndentationType;
 
     use super::*;
 
@@ -67,5 +81,20 @@ mod tests {
                 String::from("Before end */  "),
             ])
         );
+    }
+
+    #[test]
+    fn print_single_line() {
+        let mut formatter = Formatter::new(IndentationType::TwoSpaces);
+        Comment::new("# single").print(&mut formatter);
+        assert_eq!(formatter.into_string(), "# single");
+    }
+
+    #[test]
+    fn print_multi_line() {
+        let mut formatter = Formatter::new(IndentationType::TwoSpaces);
+        formatter.increase_indentation();
+        Comment::new("/*\n  first\nsecond\n*/").print(&mut formatter);
+        assert_eq!(formatter.into_string(), "/*\n    first\n  second\n  */");
     }
 }

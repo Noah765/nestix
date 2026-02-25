@@ -1,4 +1,4 @@
-use std::mem;
+use std::{mem, ops::RangeInclusive};
 
 use rnix::ast::{AttrpathValue, Expr};
 use rowan::ast::AstNode;
@@ -6,6 +6,7 @@ use rowan::ast::AstNode;
 use crate::{
     attribute_set::{AttributeSet, Element, Node, format::AttributeSetFormat},
     comment::Comment,
+    formatter::Formatter,
     parser::Parser,
 };
 
@@ -43,6 +44,7 @@ impl Attribute {
     /// in multiline format.
     pub fn construct(
         nodes: &mut Vec<Node>,
+        indentation_level: usize,
         group: &mut usize,
         node: AttrpathValue,
         mut comments_above: Vec<Comment>,
@@ -59,6 +61,7 @@ impl Attribute {
             comments_above.extend(path_parser.next_comments());
 
             nodes.push(Node {
+                indentation_level,
                 group: *group,
                 comments_above,
                 value: Element::Attribute(Self {
@@ -94,7 +97,7 @@ impl Attribute {
         }
         let (value, contains_multiline) = match unwrapped_value {
             Expr::AttrSet(x) if x.rec_token().is_none() => {
-                let (format, roots) = AttributeSet::construct(nodes, group, x);
+                let (format, roots) = AttributeSet::construct(nodes, indentation_level, group, x);
                 let contains_multiline = format == AttributeSetFormat::Multiline;
                 let value = AttributeValue::AttributeSet {
                     inline: false,
@@ -334,12 +337,142 @@ impl Attribute {
 
         (branches, leave_count)
     }
+
+    /// Returns the printed elements for this attribute, formatting attribute
+    /// values but not the surrounding attribute set.
+    ///
+    /// `index` must be the index of this attribute in `nodes`.
+    ///
+    /// If this attribute's value is an inline attribute set, this method
+    /// flattens nested attributes into dotted paths and returns one element
+    /// per leaf attribute. Otherwise, it returns a single element for this
+    /// attribute.
+    ///
+    /// Each element tuple contains:
+    /// - The node index of the attribute that produced the element.
+    /// - The group range of the element.
+    /// - The comments above the element.
+    /// - The text of the element, with formatted attribute values.
+    pub fn print<'a>(
+        &'a self,
+        formatter: &Formatter,
+        nodes: &'a Vec<Node>,
+        index: usize,
+    ) -> Vec<(usize, RangeInclusive<usize>, Vec<&'a Comment>, String)> {
+        let mut elements = Vec::new();
+        Self::print_with_path(
+            &self,
+            formatter,
+            nodes,
+            index,
+            "",
+            Vec::new(),
+            &mut elements,
+        );
+        elements
+    }
+
+    /// Appends printed elements of this attribute to `elements`.
+    fn print_with_path<'a>(
+        &'a self,
+        formatter: &Formatter,
+        nodes: &'a Vec<Node>,
+        index: usize,
+        path: &str,
+        mut comments_above: Vec<&'a Comment>,
+        elements: &mut Vec<(usize, RangeInclusive<usize>, Vec<&'a Comment>, String)>,
+    ) {
+        let path = if path.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{path}.{}", self.name)
+        };
+        comments_above.extend(&nodes[index].comments_above);
+
+        if let AttributeValue::AttributeSet { inline, roots, .. } = &self.value
+            && *inline
+        {
+            comments_above.extend(&self.comments_right);
+            comments_above.extend(&self.comments_before_equal);
+            comments_above.extend(&self.comments_after_equal);
+
+            match &nodes[roots[0]].value {
+                Element::Inherit(_) => panic!("roots should not contain inherit nodes"),
+                Element::Attribute(x) => {
+                    x.print_with_path(formatter, nodes, roots[0], &path, comments_above, elements)
+                }
+                Element::Comment(x) => {
+                    let mut formatter = formatter.child_formatter();
+                    x.print(&mut formatter);
+                    let group = nodes[roots[0]].group..=nodes[roots[0]].group;
+                    elements.push((roots[0], group, comments_above, formatter.into_string()));
+                }
+            };
+            for &i in &roots[1..] {
+                match &nodes[i].value {
+                    Element::Inherit(_) => panic!("roots should not contain inherit nodes"),
+                    Element::Attribute(x) => {
+                        x.print_with_path(formatter, nodes, i, &path, Vec::new(), elements)
+                    }
+                    Element::Comment(x) => {
+                        let mut formatter = formatter.child_formatter();
+                        x.print(&mut formatter);
+                        let group = nodes[i].group..=nodes[i].group;
+                        elements.push((i, group, Vec::new(), formatter.into_string()));
+                    }
+                }
+            }
+            return;
+        }
+
+        let mut formatter = formatter.child_formatter();
+
+        formatter.write(&path);
+        for x in &self.comments_before_equal {
+            formatter.write(" ");
+            x.print(&mut formatter);
+        }
+        formatter.write(" = ");
+        for x in &self.comments_after_equal {
+            x.print(&mut formatter);
+            formatter.write(" ");
+        }
+
+        let last_group = match &self.value {
+            AttributeValue::AttributeSet { format, roots, .. } => {
+                let format = format.as_ref().unwrap_or(&AttributeSetFormat::Multiline);
+                AttributeSet::print_roots(&mut formatter, nodes, roots, format)
+                    .unwrap_or(nodes[index].group)
+            }
+            AttributeValue::Expression(x) => {
+                formatter.set_syntax_tree_indentation_offset(nodes[index].indentation_level);
+                formatter.format_node(x.syntax().clone());
+                formatter.reset_syntax_tree_indentation_offset();
+                nodes[index].group
+            }
+        };
+
+        formatter.write(";");
+        for x in &self.comments_right {
+            formatter.write(" ");
+            x.print(&mut formatter);
+        }
+
+        elements.push((
+            index,
+            nodes[index].group..=last_group,
+            comments_above,
+            formatter.into_string(),
+        ));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
     use rnix::{Root, ast::HasEntry};
+
+    use crate::formatter::IndentationType;
 
     use super::*;
 
@@ -352,6 +485,7 @@ mod tests {
         let contains_multiline = match Root::parse(input).ok().unwrap().expr().unwrap() {
             Expr::AttrSet(x) => Attribute::construct(
                 &mut nodes,
+                1,
                 &mut 0,
                 x.attrpath_values().next().unwrap(),
                 comments_above.into_iter().map(Comment::new).collect(),
@@ -365,7 +499,7 @@ mod tests {
     fn parse_string_to_nodes(input: &str) -> Vec<Node> {
         let mut nodes = Vec::new();
         match Root::parse(input).ok().unwrap().expr().unwrap() {
-            Expr::AttrSet(x) => AttributeSet::construct(&mut nodes, &mut 0, x),
+            Expr::AttrSet(x) => AttributeSet::construct(&mut nodes, 0, &mut 0, x),
             _ => panic!(),
         };
         nodes
@@ -479,6 +613,7 @@ mod tests {
         match &nodes[..] {
             [
                 Node {
+                    indentation_level: 1,
                     group: 0,
                     comments_above: _,
                     value:
@@ -512,6 +647,7 @@ mod tests {
         match &nodes[..] {
             [
                 Node {
+                    indentation_level: 1,
                     group: 0,
                     comments_above: _,
                     value:
@@ -527,6 +663,7 @@ mod tests {
                         }),
                 },
                 Node {
+                    indentation_level: 2,
                     group: 0,
                     comments_above: _,
                     value:
@@ -537,6 +674,7 @@ mod tests {
                         }),
                 },
                 Node {
+                    indentation_level: 2,
                     group: 0,
                     comments_above: _,
                     value:
@@ -566,6 +704,7 @@ mod tests {
         match &nodes[..] {
             [
                 Node {
+                    indentation_level: 1,
                     group: 0,
                     comments_above: _,
                     value:
@@ -698,6 +837,7 @@ mod tests {
         match &nodes[..] {
             [
                 Node {
+                    indentation_level: 1,
                     group: 0,
                     comments_above: comments_above_first,
                     value:
@@ -716,6 +856,7 @@ mod tests {
                         }),
                 },
                 Node {
+                    indentation_level: 2,
                     group: 0,
                     comments_above: comments_above_second,
                     value:
@@ -753,6 +894,7 @@ mod tests {
         match &nodes[..] {
             [
                 Node {
+                    indentation_level: 1,
                     group: 0,
                     comments_above: comments_above_first,
                     value:
@@ -772,6 +914,7 @@ mod tests {
                 },
                 _,
                 Node {
+                    indentation_level: 2,
                     group: 0,
                     comments_above: comments_above_second,
                     value:
@@ -812,6 +955,7 @@ mod tests {
         match &nodes[..] {
             [
                 Node {
+                    indentation_level: 1,
                     group: 0,
                     comments_above: _,
                     value:
@@ -827,6 +971,7 @@ mod tests {
                         }),
                 },
                 Node {
+                    indentation_level: 1,
                     group: 0,
                     comments_above: _,
                     value:
@@ -838,6 +983,7 @@ mod tests {
                 },
                 _,
                 Node {
+                    indentation_level: 2,
                     group: 0,
                     comments_above,
                     value:
@@ -848,9 +994,9 @@ mod tests {
                             comments_right,
                             value: AttributeValue::Expression(_),
                         }),
-                    ..
                 },
                 Node {
+                    indentation_level: 2,
                     group: 0,
                     comments_above: _,
                     value:
@@ -1000,5 +1146,74 @@ mod tests {
             Element::Attribute(x) => x.get_nested_branches_and_leave_count(&nodes),
             _ => panic!(),
         };
+    }
+
+    #[test]
+    fn print() {
+        fn test(input: &str, expected: &[(usize, RangeInclusive<usize>, Vec<&Comment>, String)]) {
+            let mut nodes = parse_string_to_nodes(input);
+            AttributeSet::normalize_nodes(&mut nodes, &mut vec![0]);
+            AttributeSet::format_roots(&mut nodes, &vec![0]);
+            match &nodes[0].value {
+                Element::Attribute(x) => {
+                    let mut formatter = Formatter::new(IndentationType::TwoSpaces);
+                    formatter.increase_indentation();
+                    assert_eq!(x.print(&formatter, &nodes, 0), expected, "{input}")
+                }
+                _ => panic!("{input}"),
+            }
+        }
+        test(
+            "{/*above*/attr1/*before*/=/*after*/[{attr1 = {attr2 = true;};}]/*right*/;}",
+            &[(
+                0,
+                0..=0,
+                vec![&Comment::new("/*above*/")],
+                String::from("attr1 /*before*/ = /*after*/ [{attr1.attr2 = true;}]; /*right*/"),
+            )],
+        );
+        test(
+            "{attr1 = {inherit;attr2 = true;\n\nattr3 = true;};}",
+            &[(
+                0,
+                0..=1,
+                Vec::new(),
+                String::from(
+                    "attr1 = {\n    inherit;\n    attr2 = true;\n\n    attr3 = true;\n  };",
+                ),
+            )],
+        );
+        test(
+            "{attr1={/*above attr3*/attr2/*before*/./*after*/attr3/*before equal*/=/*after equal*/{/*before attr4*/attr4 = true;\n/*above attr5*/attr5 = true;};/*right of attr3*/};}",
+            &[
+                (
+                    3,
+                    0..=0,
+                    vec![
+                        &Comment::new("/*above attr3*/"),
+                        &Comment::new("/*before*/"),
+                        &Comment::new("/*after*/"),
+                        &Comment::new("/*right of attr3*/"),
+                        &Comment::new("/*before equal*/"),
+                        &Comment::new("/*after equal*/"),
+                        &Comment::new("/*before attr4*/"),
+                    ],
+                    String::from("attr1.attr2.attr3.attr4 = true;"),
+                ),
+                (
+                    4,
+                    0..=0,
+                    vec![&Comment::new("/*above attr5*/")],
+                    String::from("attr1.attr2.attr3.attr5 = true;"),
+                ),
+            ],
+        );
+        test(
+            "{attr1 = {# Comment\n\nattr2 = true;};}",
+            &[
+                (1, 0..=0, Vec::new(), String::from("# Comment")),
+                (2, 1..=1, Vec::new(), String::from("attr1.attr2 = true;")),
+            ],
+        )
     }
 }

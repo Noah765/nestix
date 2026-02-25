@@ -1,4 +1,7 @@
-use crate::{comment::Comment, parser::Parser};
+use crate::{
+    attribute_set::inherit::format::InheritFormat, comment::Comment, formatter::Formatter,
+    parser::Parser,
+};
 
 /// A Nix inherit attribute.
 ///
@@ -50,6 +53,25 @@ impl InheritAttribute {
             attribute,
         }
     }
+
+    /// Writes this inherit attribute to `formatter` using `format`.
+    pub fn print(&self, formatter: &mut Formatter, format: &InheritFormat) {
+        let separator = match format {
+            InheritFormat::Inline => " ",
+            InheritFormat::Multiline { .. } => &formatter.line_separator(),
+        };
+        for x in &self.comments_above {
+            x.print(formatter);
+            formatter.write(separator);
+        }
+
+        formatter.write(&self.attribute);
+
+        for x in &self.comments_right {
+            formatter.write(" ");
+            x.print(formatter);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -61,11 +83,11 @@ mod tests {
     };
     use rowan::ast::AstNode;
 
+    use crate::formatter::IndentationType;
+
     use super::*;
 
-    #[test]
-    fn new() {
-        let set = "{inherit (from)\n# above \n${/**/ attr1}\t /* attr1 */\n/* attr2 */\"attr2\"attr3 /* attr3 */;}";
+    fn parse_string_to_inherit_attributes(set: &str) -> Vec<InheritAttribute> {
         let mut parser = match Root::parse(set).ok().unwrap().expr().unwrap() {
             Expr::AttrSet(x) => Parser::new(x.inherits().next().unwrap().syntax().clone()),
             _ => panic!(),
@@ -78,9 +100,14 @@ mod tests {
         {
             attributes.push(InheritAttribute::new(&mut parser));
         }
+        attributes
+    }
 
+    #[test]
+    fn new() {
+        let set = "{inherit (from)\n# above \n${/**/ attr1}\t /* attr1 */\n/* attr2 */\"attr2\"attr3 /* attr3 */;}";
         assert_eq!(
-            attributes,
+            parse_string_to_inherit_attributes(set),
             [
                 InheritAttribute {
                     comments_above: vec![Comment::new("# above ")],
@@ -99,5 +126,25 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn print_inline() {
+        let set = "{inherit (from) /* above */  attr1\t/* right */;}";
+        let mut formatter = Formatter::new(IndentationType::TwoSpaces);
+        parse_string_to_inherit_attributes(set)[0].print(&mut formatter, &InheritFormat::Inline);
+        assert_eq!(formatter.into_string(), "/* above */ attr1 /* right */");
+    }
+
+    #[test]
+    fn print_multiline() {
+        let set = "{inherit (from)\n/* above */ attr1\t/* right */;}";
+        let mut formatter = Formatter::new(IndentationType::TwoSpaces);
+        let format = InheritFormat::Multiline {
+            from_on_separate_line: false,
+        };
+        formatter.increase_indentation();
+        parse_string_to_inherit_attributes(set)[0].print(&mut formatter, &format);
+        assert_eq!(formatter.into_string(), "/* above */\n  attr1 /* right */");
     }
 }

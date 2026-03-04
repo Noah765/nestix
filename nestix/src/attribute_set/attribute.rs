@@ -19,8 +19,6 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct Attribute {
     name: String,
-    comments_before_equal: Vec<Comment>,
-    comments_after_equal: Vec<Comment>,
     comments_right: Vec<Comment>,
     value: AttributeValue,
 }
@@ -66,8 +64,6 @@ impl Attribute {
                 comments_above,
                 value: Element::Attribute(Self {
                     name,
-                    comments_before_equal: Vec::new(),
-                    comments_after_equal: Vec::new(),
                     comments_right: Vec::new(),
                     value: AttributeValue::AttributeSet {
                         inline: true,
@@ -84,11 +80,11 @@ impl Attribute {
         nodes[first_index].comments_above = comments_above;
 
         let last_index = nodes.len() - 1;
-        let last = AttributeSet::get_attribute_mut(nodes, last_index);
+        let last = &mut nodes[last_index];
 
-        last.comments_before_equal = parser.next_comments();
+        last.comments_above.extend(parser.next_comments());
         parser.next();
-        last.comments_after_equal = parser.next_comments();
+        last.comments_above.extend(parser.next_comments());
 
         let value = parser.next_expression();
         let mut unwrapped_value = value.clone();
@@ -201,8 +197,6 @@ impl Attribute {
         };
 
         let mut comments_above = mem::take(&mut second_node.comments_above);
-        comments_above.extend(mem::take(&mut second_attribute.comments_before_equal));
-        comments_above.extend(mem::take(&mut second_attribute.comments_after_equal));
         comments_above.extend(mem::take(&mut second_attribute.comments_right));
         if let Some(i) = second_first {
             comments_above.extend(mem::take(&mut nodes[i].comments_above));
@@ -393,8 +387,6 @@ impl Attribute {
             && *inline
         {
             comments_above.extend(&self.comments_right);
-            comments_above.extend(&self.comments_before_equal);
-            comments_above.extend(&self.comments_after_equal);
 
             match &nodes[roots[0]].value {
                 Element::Inherit(_) => panic!("roots should not contain inherit nodes"),
@@ -428,15 +420,7 @@ impl Attribute {
         let mut formatter = formatter.child_formatter();
 
         formatter.write(&path);
-        for x in &self.comments_before_equal {
-            formatter.write(" ");
-            x.print(&mut formatter);
-        }
         formatter.write(" = ");
-        for x in &self.comments_after_equal {
-            x.print(&mut formatter);
-            formatter.write(" ");
-        }
 
         let last_group = match &self.value {
             AttributeValue::AttributeSet { format, roots, .. } => {
@@ -521,8 +505,15 @@ mod tests {
             nodes[1].comments_above,
             [Comment::new("/*after*/"), Comment::new("/*before next*/")]
         );
-        assert_eq!(nodes[2].comments_above, Vec::new());
-        assert_eq!(nodes[3].comments_above, vec![Comment::new("/*before*/")]);
+        assert_eq!(nodes[2].comments_above, []);
+        assert_eq!(
+            nodes[3].comments_above,
+            [
+                Comment::new("/*before*/"),
+                Comment::new("/*before equal*/"),
+                Comment::new("/*after equal*/")
+            ]
+        );
 
         let attributes: Vec<_> = nodes
             .into_iter()
@@ -570,32 +561,18 @@ mod tests {
                 },
             ] => {
                 assert_eq!(first.name, "attr1");
-                assert_eq!(first.comments_before_equal, &[]);
-                assert_eq!(first.comments_after_equal, &[]);
                 assert_eq!(first.comments_right, &[]);
                 assert_eq!(first_roots, &[1]);
 
                 assert_eq!(second.name, "\"attr2\"");
-                assert_eq!(second.comments_before_equal, &[]);
-                assert_eq!(second.comments_after_equal, &[]);
                 assert_eq!(second.comments_right, &[]);
                 assert_eq!(second_roots, &[2]);
 
                 assert_eq!(third.name, "${attr3}");
-                assert_eq!(third.comments_before_equal, &[]);
-                assert_eq!(third.comments_after_equal, &[]);
                 assert_eq!(third.comments_right, &[]);
                 assert_eq!(third_roots, &[3]);
 
                 assert_eq!(fourth.name, "\"attr${\"\"}4\"");
-                assert_eq!(
-                    fourth.comments_before_equal,
-                    &[Comment::new("/*before equal*/")]
-                );
-                assert_eq!(
-                    fourth.comments_after_equal,
-                    &[Comment::new("/*after equal*/")]
-                );
                 assert_eq!(
                     fourth.comments_right,
                     &[Comment::new("/*before*/"), Comment::new("/*Right*/")]
@@ -989,8 +966,6 @@ mod tests {
                     value:
                         Element::Attribute(Attribute {
                             name: third_name,
-                            comments_before_equal,
-                            comments_after_equal,
                             comments_right,
                             value: AttributeValue::Expression(_),
                         }),
@@ -1021,11 +996,10 @@ mod tests {
                         Comment::new("/*before*/"),
                         Comment::new("/*after*/"),
                         Comment::new("/*right*/"),
-                        Comment::new("/*above attr3*/")
+                        Comment::new("/*above attr3*/"),
+                        Comment::new("/*before equal*/")
                     ]
                 );
-                assert_eq!(comments_before_equal, &[Comment::new("/*before equal*/")]);
-                assert_eq!(comments_after_equal, &[]);
                 assert_eq!(comments_right, &[]);
             }
             _ => panic!("{nodes:#?}"),
@@ -1168,8 +1142,12 @@ mod tests {
             &[(
                 0,
                 0..=0,
-                vec![&Comment::new("/*above*/")],
-                String::from("attr1 /*before*/ = /*after*/ [{attr1.attr2 = true;}]; /*right*/"),
+                vec![
+                    &Comment::new("/*above*/"),
+                    &Comment::new("/*before*/"),
+                    &Comment::new("/*after*/"),
+                ],
+                String::from("attr1 = [{attr1.attr2 = true;}]; /*right*/"),
             )],
         );
         test(
@@ -1193,9 +1171,9 @@ mod tests {
                         &Comment::new("/*above attr3*/"),
                         &Comment::new("/*before*/"),
                         &Comment::new("/*after*/"),
-                        &Comment::new("/*right of attr3*/"),
                         &Comment::new("/*before equal*/"),
                         &Comment::new("/*after equal*/"),
+                        &Comment::new("/*right of attr3*/"),
                         &Comment::new("/*before attr4*/"),
                     ],
                     String::from("attr1.attr2.attr3.attr4 = true;"),

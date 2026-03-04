@@ -1,6 +1,6 @@
 use std::{mem, ops::RangeInclusive};
 
-use rnix::ast::{AttrpathValue, Expr};
+use rnix::ast::{AstToken, AttrpathValue, Expr, Whitespace};
 use rowan::ast::AstNode;
 
 use crate::{
@@ -20,6 +20,7 @@ use crate::{
 pub struct Attribute {
     name: String,
     comments_right: Vec<Comment>,
+    newline_after_equal: bool,
     value: AttributeValue,
 }
 
@@ -65,6 +66,7 @@ impl Attribute {
                 value: Element::Attribute(Self {
                     name,
                     comments_right: Vec::new(),
+                    newline_after_equal: false,
                     value: AttributeValue::AttributeSet {
                         inline: true,
                         format: None,
@@ -84,6 +86,16 @@ impl Attribute {
 
         last.comments_above.extend(parser.next_comments());
         parser.next();
+        last.comments_above.extend(parser.next_comment_line());
+        let newline_after_equal = parser
+            .peek()
+            .is_some_and(|x| Whitespace::can_cast(x.kind()));
+        if newline_after_equal {
+            match &mut last.value {
+                Element::Attribute(x) => x.newline_after_equal = true,
+                _ => panic!("node at index {last_index} should be an attribute"),
+            }
+        }
         last.comments_above.extend(parser.next_comments());
 
         let value = parser.next_expression();
@@ -93,6 +105,7 @@ impl Attribute {
         }
         let (value, contains_multiline) = match unwrapped_value {
             Expr::AttrSet(x) if x.rec_token().is_none() => {
+                let indentation_level = indentation_level + if newline_after_equal { 1 } else { 0 };
                 let (format, roots) = AttributeSet::construct(nodes, indentation_level, group, x);
                 let contains_multiline = format == AttributeSetFormat::Multiline;
                 let value = AttributeValue::AttributeSet {
@@ -420,7 +433,13 @@ impl Attribute {
         let mut formatter = formatter.child_formatter();
 
         formatter.write(&path);
-        formatter.write(" = ");
+        formatter.write(" =");
+        if self.newline_after_equal {
+            formatter.increase_indentation();
+            formatter.open_line();
+        } else {
+            formatter.write(" ");
+        }
 
         let last_group = match &self.value {
             AttributeValue::AttributeSet { format, roots, .. } => {
@@ -429,7 +448,9 @@ impl Attribute {
                     .unwrap_or(nodes[index].group)
             }
             AttributeValue::Expression(x) => {
-                formatter.set_syntax_tree_indentation_offset(nodes[index].indentation_level);
+                let offset =
+                    nodes[index].indentation_level + if self.newline_after_equal { 1 } else { 0 };
+                formatter.set_syntax_tree_indentation_offset(offset);
                 formatter.format_node(x.syntax().clone());
                 formatter.reset_syntax_tree_indentation_offset();
                 nodes[index].group
@@ -492,7 +513,7 @@ mod tests {
     #[test]
     fn construct_expression_value() {
         let (nodes, _) = parse_string_to_attribute(
-            "{/*Above*/attr1/*before*/./*after*/\"attr2\"/*before next*/.${attr3}./*before*/\"attr${\"\"}4\"/*before equal*/=/*after equal*/(true)/*before*/;/*Right*/}",
+            "{/*Above*/attr1/*before*/./*after*/\"attr2\"/*before next*/.${attr3}./*before*/\"attr${\"\"}4\"/*before equal*/=/*after equal*/\n(true)/*before*/;/*Right*/}",
             vec!["/*Above*/"],
             vec!["/*Right*/"],
         );
@@ -562,14 +583,17 @@ mod tests {
             ] => {
                 assert_eq!(first.name, "attr1");
                 assert_eq!(first.comments_right, &[]);
+                assert!(!first.newline_after_equal);
                 assert_eq!(first_roots, &[1]);
 
                 assert_eq!(second.name, "\"attr2\"");
                 assert_eq!(second.comments_right, &[]);
+                assert!(!second.newline_after_equal);
                 assert_eq!(second_roots, &[2]);
 
                 assert_eq!(third.name, "${attr3}");
                 assert_eq!(third.comments_right, &[]);
+                assert!(!third.newline_after_equal);
                 assert_eq!(third_roots, &[3]);
 
                 assert_eq!(fourth.name, "\"attr${\"\"}4\"");
@@ -577,6 +601,7 @@ mod tests {
                     fourth.comments_right,
                     &[Comment::new("/*before*/"), Comment::new("/*Right*/")]
                 );
+                assert!(fourth.newline_after_equal);
                 assert_eq!(value.to_string(), "(true)");
             }
             _ => panic!("{attributes:#?}"),
@@ -616,7 +641,7 @@ mod tests {
     #[test]
     fn construct_filled_attribute_set_value() {
         let (nodes, _) = parse_string_to_attribute(
-            "{attr1 = (({attr2 = true; attr3 = true;}));}",
+            "{attr1 =\n(({attr2 = true; attr3 = true;}));}",
             Vec::new(),
             Vec::new(),
         );
@@ -640,7 +665,7 @@ mod tests {
                         }),
                 },
                 Node {
-                    indentation_level: 2,
+                    indentation_level: 3,
                     group: 0,
                     comments_above: _,
                     value:
@@ -651,7 +676,7 @@ mod tests {
                         }),
                 },
                 Node {
-                    indentation_level: 2,
+                    indentation_level: 3,
                     group: 0,
                     comments_above: _,
                     value:
@@ -968,6 +993,7 @@ mod tests {
                             name: third_name,
                             comments_right,
                             value: AttributeValue::Expression(_),
+                            ..
                         }),
                 },
                 Node {
@@ -1138,7 +1164,7 @@ mod tests {
             }
         }
         test(
-            "{/*above*/attr1/*before*/=/*after*/[{attr1 = {attr2 = true;};}]/*right*/;}",
+            "{/*above*/attr1/*before*/=/*after*/\n[\n  {attr1 = {attr2 = true;};}]/*right*/;}",
             &[(
                 0,
                 0..=0,
@@ -1147,17 +1173,17 @@ mod tests {
                     &Comment::new("/*before*/"),
                     &Comment::new("/*after*/"),
                 ],
-                String::from("attr1 = [{attr1.attr2 = true;}]; /*right*/"),
+                String::from("attr1 =\n    [\n  {attr1.attr2 = true;}]; /*right*/"),
             )],
         );
         test(
-            "{attr1 = {inherit;attr2 = true;\n\nattr3 = true;};}",
+            "{attr1 =\n{inherit;attr2 = true;\n\nattr3 = true;};}",
             &[(
                 0,
                 0..=1,
                 Vec::new(),
                 String::from(
-                    "attr1 = {\n    inherit;\n    attr2 = true;\n\n    attr3 = true;\n  };",
+                    "attr1 =\n    {\n      inherit;\n      attr2 = true;\n\n      attr3 = true;\n    };",
                 ),
             )],
         );

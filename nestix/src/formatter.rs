@@ -127,19 +127,20 @@ impl Formatter {
             tree.print(self);
             return;
         }
+        if let Some(x) = Str::cast(node.clone())
+            && node
+                .children_with_tokens()
+                .next()
+                .and_then(|x| x.into_token())
+                .is_some_and(|x| x.text() == "''")
+        {
+            self.format_multiline_string(x);
+            return;
+        }
+
         for x in node.children_with_tokens() {
             match x {
-                NodeOrToken::Node(x) => match Str::cast(x.clone()) {
-                    Some(str)
-                        if x.children_with_tokens()
-                            .next()
-                            .and_then(|x| x.into_token())
-                            .is_some_and(|x| x.text() == "''") =>
-                    {
-                        self.format_multiline_string(str);
-                    }
-                    _ => self.format_node(x),
-                },
+                NodeOrToken::Node(x) => self.format_node(x),
                 NodeOrToken::Token(x) => match Whitespace::cast(x.clone()) {
                     None => self.write(x.text()),
                     Some(x) => self.format_whitespace_token(x),
@@ -367,8 +368,8 @@ mod tests {
             "{\n  attr1 = {\n    attr2 = true;\n    attr3 = [\n      \"\n x\"\n      ''\n        y\n      ''\n    ];\n\n    attr4 = true;\n  };\n  attr5 = true;\n}",
         );
         test(
-            "[\n  {\nattr1 = true;}\n]",
-            "[\n  {\n    attr1 = true;\n  }\n]",
+            "[\n  {\nattr1 = ''\nx\n'';}\n]",
+            "[\n  {\n    attr1 = ''\n      x\n    '';\n  }\n]",
         );
         test("[\n   1\n  \n     2\n]", "[\n  1\n\n    2\n]");
         test(

@@ -179,10 +179,15 @@ impl Formatter {
 
     /// Writes `node` with normalized indentation.
     fn format_multiline_string(&mut self, node: Str) {
+        let content = node.to_string();
+        if !content.contains('\n') {
+            self.write(&content);
+            return;
+        }
+
         self.increase_indentation();
         self.write("''");
 
-        let content = node.to_string();
         let prefix_space_count = content[2..content.len() - 2]
             .lines()
             .filter(|x| x.chars().any(|x| x != ' '))
@@ -373,8 +378,8 @@ mod tests {
         );
         test("[\n   1\n  \n     2\n]", "[\n  1\n\n    2\n]");
         test(
-            "{\n  a = let\n     x = 1;\n   in x;\n}",
-            "{\n  a = let\n    x = 1;\n  in x;\n}",
+            "{\n  a = let\n     x = ''x'';\n   in x;\n}",
+            "{\n  a = let\n    x = ''x'';\n  in x;\n}",
         );
         test(
             "''  a\n  b\n   ${{attr1 = {attr2 = true;};}} \n ''",

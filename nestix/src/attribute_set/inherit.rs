@@ -20,13 +20,15 @@ pub mod format;
 /// when it is present and below the from segment (or after the inherit keyword
 /// if the from segment is absent) when no attributes are specified. When
 /// attributes are specified, comments below the from segment are interpreted as
-/// being above the first attribute.
+/// being above the first attribute. Additionally, `Inherit` supports comments
+/// above the semicolon and to the right.
 #[derive(Clone, Debug)]
 pub struct Inherit {
     format: InheritFormat,
     comments_before_from: Vec<Comment>,
     comments_right_of_from: Vec<Comment>,
     comments_below_from: Vec<Comment>,
+    comments_above_semicolon: Vec<Comment>,
     comments_right: Vec<Comment>,
     from: Option<InheritFrom>,
     attributes: Vec<InheritAttribute>,
@@ -52,10 +54,21 @@ impl Inherit {
         };
 
         let mut attributes = Vec::new();
+        let mut comments_above_semicolon = Vec::new();
         while let Some(x) = parser.peek()
             && x.kind() != SyntaxKind::TOKEN_SEMICOLON
         {
-            attributes.push(InheritAttribute::new(&mut parser));
+            let comments = parser.next_comments();
+
+            if let Some(x) = parser.peek()
+                && x.kind() == SyntaxKind::TOKEN_SEMICOLON
+            {
+                comments_above_semicolon = comments;
+            } else {
+                let attribute = parser.next_attribute().to_string();
+                let comments_right = parser.next_comment_line();
+                attributes.push(InheritAttribute::new(comments, comments_right, attribute));
+            }
         }
 
         Self {
@@ -63,6 +76,7 @@ impl Inherit {
             comments_before_from,
             comments_right_of_from,
             comments_below_from,
+            comments_above_semicolon,
             comments_right,
             from: node.from(),
             attributes,
@@ -106,6 +120,11 @@ impl Inherit {
             x.print(formatter, &self.format);
         }
 
+        for x in &self.comments_above_semicolon {
+            formatter.open_line();
+            x.print(formatter);
+        }
+
         if let InheritFormat::Multiline { .. } = self.format {
             formatter.write(separator);
         }
@@ -139,6 +158,7 @@ mod tests {
             comments_before_from: &[Comment],
             comments_right_of_from: &[Comment],
             comments_below_from: &[Comment],
+            comments_above_semicolon: &[Comment],
         ) {
             let inherit = match Root::parse(set).ok().unwrap().expr().unwrap() {
                 Expr::AttrSet(x) => Inherit::new(x.inherits().next().unwrap(), Vec::new()),
@@ -150,16 +170,24 @@ mod tests {
                 "{set}"
             );
             assert_eq!(inherit.comments_below_from, comments_below_from, "{set}");
+            assert_eq!(
+                inherit.comments_above_semicolon, comments_above_semicolon,
+                "{set}"
+            );
         }
 
-        test("{inherit (from) attr1;}", &[], &[], &[]);
+        test("{inherit (from) attr1;}", &[], &[], &[], &[]);
         test(
-            "{inherit /* first */ # second\n(from) /* right of from */ attr1;}",
+            "{inherit /* first */ # second\n(from) /* right of from */ attr1\n/* first above */\n/* second above */;}",
             &[Comment::new("/* first */"), Comment::new("# second")],
             &[Comment::new("/* right of from */")],
             &[],
+            &[
+                Comment::new("/* first above */"),
+                Comment::new("/* second above */"),
+            ],
         );
-        test("{inherit /* above attr1 */ attr1;}", &[], &[], &[]);
+        test("{inherit /* above attr1 */ attr1;}", &[], &[], &[], &[]);
         test(
             "{inherit # before\n(from) # right\n/* first below */\n\n/* second below */;}",
             &[Comment::new("# before")],
@@ -168,12 +196,14 @@ mod tests {
                 Comment::new("/* first below */"),
                 Comment::new("/* second below */"),
             ],
+            &[],
         );
         test(
             "{inherit /* below */;}",
             &[],
             &[],
             &[Comment::new("/* below */")],
+            &[],
         );
     }
 
@@ -208,8 +238,8 @@ mod tests {
             "inherit /* before */ (from)\n  attr1\n  attr2\n  ;",
         );
         test(
-            "{inherit/* before */\n(from)# right\nattr1 attr2\n;}",
-            "inherit\n  /* before */\n  (from) # right\n  attr1\n  attr2\n  ;",
+            "{inherit/* before */\n(from)# right\nattr1 attr2\n/* above */;}",
+            "inherit\n  /* before */\n  (from) # right\n  attr1\n  attr2\n  /* above */\n  ;",
         );
     }
 }

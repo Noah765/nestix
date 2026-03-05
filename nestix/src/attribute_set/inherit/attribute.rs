@@ -1,6 +1,5 @@
 use crate::{
     attribute_set::inherit::format::InheritFormat, comment::Comment, formatter::Formatter,
-    parser::Parser,
 };
 
 /// A Nix inherit attribute.
@@ -34,19 +33,13 @@ pub struct InheritAttribute {
 }
 
 impl InheritAttribute {
-    /// Constructs a new `InheritAttribute` by consuming elements using `parser`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `parser` is not in front of comments preceding this attribute
-    /// or this attribute itself.
-    pub fn new(parser: &mut Parser) -> Self {
-        let comments_above = parser.next_comments();
-        let attribute = parser.next_attribute().to_string();
-        let comments_right = parser.next_comment_line();
-
-        parser.skip_whitespace();
-
+    /// Constructs a new `InheritAttribute` from `comments_above`,
+    /// `comments_right` and `attribute`.
+    pub fn new(
+        comments_above: Vec<Comment>,
+        comments_right: Vec<Comment>,
+        attribute: String,
+    ) -> Self {
         Self {
             comments_above,
             comments_right,
@@ -77,74 +70,36 @@ impl InheritAttribute {
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
-    use rnix::{
-        Root, SyntaxKind,
-        ast::{Expr, HasEntry},
-    };
-    use rowan::ast::AstNode;
 
     use crate::formatter::IndentationType;
 
     use super::*;
 
-    fn parse_string_to_inherit_attributes(set: &str) -> Vec<InheritAttribute> {
-        let mut parser = match Root::parse(set).ok().unwrap().expr().unwrap() {
-            Expr::AttrSet(x) => Parser::new(x.inherits().next().unwrap().syntax().clone()),
-            _ => panic!(),
-        };
-        parser.skip_after(|x| x.kind() == SyntaxKind::NODE_INHERIT_FROM);
-
-        let mut attributes = Vec::new();
-        while let Some(x) = parser.peek()
-            && x.kind() != SyntaxKind::TOKEN_SEMICOLON
-        {
-            attributes.push(InheritAttribute::new(&mut parser));
-        }
-        attributes
-    }
-
-    #[test]
-    fn new() {
-        let set = "{inherit (from)\n# above \n${/**/ attr1}\t /* attr1 */\n/* attr2 */\"attr2\"attr3 /* attr3 */;}";
-        assert_eq!(
-            parse_string_to_inherit_attributes(set),
-            [
-                InheritAttribute {
-                    comments_above: vec![Comment::new("# above ")],
-                    comments_right: vec![Comment::new("/* attr1 */")],
-                    attribute: String::from("${/**/ attr1}"),
-                },
-                InheritAttribute {
-                    comments_above: vec![Comment::new("/* attr2 */")],
-                    comments_right: Vec::new(),
-                    attribute: String::from("\"attr2\""),
-                },
-                InheritAttribute {
-                    comments_above: Vec::new(),
-                    comments_right: vec![Comment::new("/* attr3 */")],
-                    attribute: String::from("attr3"),
-                }
-            ]
-        );
-    }
-
     #[test]
     fn print_inline() {
-        let set = "{inherit (from) /* above */  attr1\t/* right */;}";
         let mut formatter = Formatter::new(IndentationType::TwoSpaces);
-        parse_string_to_inherit_attributes(set)[0].print(&mut formatter, &InheritFormat::Inline);
+        InheritAttribute::new(
+            vec![Comment::new("/* above */")],
+            vec![Comment::new("/* right */")],
+            String::from("attr1"),
+        )
+        .print(&mut formatter, &InheritFormat::Inline);
         assert_eq!(formatter.into_string(), "/* above */ attr1 /* right */");
     }
 
     #[test]
     fn print_multiline() {
-        let set = "{inherit (from)\n/* above */ attr1\t/* right */;}";
         let mut formatter = Formatter::new(IndentationType::TwoSpaces);
+        formatter.increase_indentation();
         let format = InheritFormat::Multiline {
             from_on_separate_line: false,
         };
-        formatter.increase_indentation();
-        parse_string_to_inherit_attributes(set)[0].print(&mut formatter, &format);
+        InheritAttribute::new(
+            vec![Comment::new("/* above */")],
+            vec![Comment::new("/* right */")],
+            String::from("attr1"),
+        )
+        .print(&mut formatter, &format);
         assert_eq!(formatter.into_string(), "/* above */\n  attr1 /* right */");
     }
 }

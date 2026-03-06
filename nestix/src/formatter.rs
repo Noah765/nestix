@@ -200,8 +200,8 @@ impl Formatter {
             IndentationType::FourSpaces | IndentationType::Tabs => "    ",
         };
 
-        let mut is_after_interpolation = false;
         let mut parts = node.parts().peekable();
+        let mut is_first = true;
         while let Some(part) = parts.next() {
             match part {
                 InterpolPart::Literal(x) => {
@@ -209,11 +209,11 @@ impl Formatter {
                     let first_line = lines.next().expect("`lines` should not be empty");
                     let last_line = lines.next_back();
 
-                    if is_after_interpolation {
-                        self.write(first_line);
-                    } else if first_line.len() > prefix_space_count {
+                    if is_first && first_line.len() > prefix_space_count {
                         self.indent_with(indentation_per_level);
                         self.write(&first_line[prefix_space_count..]);
+                    } else {
+                        self.write(first_line);
                     }
 
                     for x in lines {
@@ -226,6 +226,7 @@ impl Formatter {
                     }
 
                     let Some(last_line) = last_line else {
+                        is_first = false;
                         continue;
                     };
                     self.write("\n");
@@ -233,18 +234,20 @@ impl Formatter {
                         self.decrease_indentation();
                         self.indent_with(indentation_per_level);
                         self.increase_indentation();
-                    } else if last_line.len() <= prefix_space_count {
-                        self.indent_with(indentation_per_level);
                     } else {
                         self.indent_with(indentation_per_level);
                         self.write(&last_line[prefix_space_count..]);
                     }
                 }
                 InterpolPart::Interpolation(x) => {
+                    if is_first {
+                        self.indent_with(indentation_per_level);
+                    }
                     self.format_node(x.syntax().clone());
-                    is_after_interpolation = true;
                 }
             }
+
+            is_first = false;
         }
 
         self.write("''");
@@ -388,6 +391,8 @@ mod tests {
         test("''\n${true}''", "''\n  ${true}''");
         test("\t\n\t\n''\na''", "\n\n''\n    a''");
         test("''a\n''", "''  a\n''");
+        test("''a${true}a\n''", "''  a${true}a\n''");
+        test("''${true}\n''", "''  ${true}\n''");
     }
 
     #[test]

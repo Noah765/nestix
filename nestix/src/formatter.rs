@@ -243,7 +243,9 @@ impl Formatter {
                     if is_first {
                         self.indent_with(indentation_per_level);
                     }
+                    let indentation_level = self.indentation_level;
                     self.format_node(x.syntax().clone());
+                    self.indentation_level = indentation_level;
                 }
             }
 
@@ -392,7 +394,7 @@ mod tests {
         test("\t\n\t\n''\na''", "\n\n''\n    a''");
         test("''a\n''", "''  a\n''");
         test("''a${true}a\n''", "''  a${true}a\n''");
-        test("''${true}\n''", "''  ${true}\n''");
+        test("''${true\n    }\nbelow''", "''  ${true\n    }\n  below''");
     }
 
     #[test]

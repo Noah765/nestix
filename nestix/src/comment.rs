@@ -1,5 +1,3 @@
-use std::iter;
-
 use crate::formatter::Formatter;
 
 /// A Nix comment.
@@ -14,28 +12,28 @@ impl Comment {
     /// This method does not check whether the provided `text` is actually a
     /// valid Nix comment string.
     pub fn new(text: &str) -> Self {
-        // `lines` is not empty, even if `text` is empty.
-        let lines: Vec<_> = text.trim_start().lines().collect();
-        if lines.len() == 1 {
-            return Self(vec![String::from(lines[0])]);
-        }
-
-        let indentation = lines[1..lines.len() - 1]
-            .into_iter()
+        let indentation = text
+            .trim_start()
+            .lines()
+            .skip(1)
+            .filter(|x| x.trim_start().len() != 0)
             .map(|x| &x[..x.len() - x.trim_start().len()])
             .min_by_key(|x| x.len())
-            .map_or_else(String::new, |x| String::from(x));
+            .unwrap_or("");
 
-        let last_line = lines
-            .last()
-            .expect("`lines` should not be empty")
+        let mut lines: Vec<_> = text
             .trim_start()
-            .to_string();
-        let lines = lines[..lines.len() - 1]
-            .into_iter()
-            .map(|x| x.strip_prefix(&indentation).unwrap_or(x).to_string())
-            .chain(iter::once(last_line))
+            .lines()
+            .map(|x| {
+                if x.trim_start().len() == 0 {
+                    String::from("")
+                } else {
+                    x.strip_prefix(&indentation).unwrap_or(x).to_string()
+                }
+            })
             .collect();
+        let last = lines.last_mut().expect("`lines` should not be empty");
+        last.replace_range(..last.len() - last.trim_start().len(), "");
 
         Self(lines)
     }
@@ -45,8 +43,12 @@ impl Comment {
         formatter.write(&self.0[0]);
 
         for x in &self.0[1..] {
-            formatter.open_line();
-            formatter.write(x);
+            if x.is_empty() {
+                formatter.write("\n");
+            } else {
+                formatter.open_line();
+                formatter.write(x);
+            }
         }
     }
 }
@@ -71,14 +73,32 @@ mod tests {
     fn new_multi_line() {
         assert_eq!(
             Comment::new(
-                "  /* After start  \n  \tSecond line  \n    Third line\n  \t  Fourth line \n     Before end */  "
+                "  /* After start  \n\t\n  \tSecond line  \n\t   \t \n    Third line\n  \t  Fourth line \n  \tBefore end */  "
             ),
             Comment(vec![
                 String::from("/* After start  "),
+                String::from(""),
                 String::from("Second line  "),
+                String::from(""),
                 String::from("    Third line"),
                 String::from("  Fourth line "),
                 String::from("Before end */  "),
+            ])
+        );
+        assert_eq!(
+            Comment::new(" /**\n    Line\n  /**"),
+            Comment(vec![
+                String::from("/**"),
+                String::from("  Line"),
+                String::from("/**")
+            ])
+        );
+        assert_eq!(
+            Comment::new("  /**\nLine\n  /**"),
+            Comment(vec![
+                String::from("/**"),
+                String::from("Line"),
+                String::from("/**")
             ])
         );
     }
@@ -94,7 +114,7 @@ mod tests {
     fn print_multi_line() {
         let mut formatter = Formatter::new(IndentationType::TwoSpaces);
         formatter.increase_indentation();
-        Comment::new("/*\n  first\nsecond\n*/").print(&mut formatter);
-        assert_eq!(formatter.into_string(), "/*\n    first\n  second\n  */");
+        Comment::new("/*\n  first\n\nsecond\n*/").print(&mut formatter);
+        assert_eq!(formatter.into_string(), "/*\n    first\n\n  second\n  */");
     }
 }

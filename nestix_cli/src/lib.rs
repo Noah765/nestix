@@ -67,15 +67,19 @@ fn format_paths(cli: Cli) -> Result<(), Error> {
         }
     }
 
-    if counter == 0 && cli.check {
-        println!("All files are formatted.");
-    } else if cli.check {
-        eprintln!("\n{counter} files require formatting.");
-        return Err(Error::Check);
-    } else if counter == 0 {
-        println!("No files were formatted.");
-    } else {
-        println!("\n{counter} files were formatted.");
+    match (cli.check, counter) {
+        (false, 0) => println!("No files were formatted."),
+        (false, 1) => println!("\n1 file was formatted."),
+        (false, _) => println!("\n{counter} files were formatted."),
+        (true, 0) => println!("All files are formatted."),
+        (true, 1) => {
+            eprintln!("\n1 file requires formatting.");
+            return Err(Error::Check);
+        }
+        (true, _) => {
+            eprintln!("\n{counter} files require formatting.");
+            return Err(Error::Check);
+        }
     }
 
     Ok(())

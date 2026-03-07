@@ -134,7 +134,7 @@ impl Formatter {
                 .and_then(|x| x.into_token())
                 .is_some_and(|x| x.text() == "''")
         {
-            self.format_multiline_string(x);
+            self.format_indented_string(x);
             return;
         }
 
@@ -177,8 +177,8 @@ impl Formatter {
         self.open_line();
     }
 
-    /// Writes `node` with normalized indentation.
-    fn format_multiline_string(&mut self, node: Str) {
+    /// Writes the indented string `node` with normalized indentation.
+    fn format_indented_string(&mut self, node: Str) {
         let content = node.to_string();
         if !content.contains('\n') {
             self.write(&content);

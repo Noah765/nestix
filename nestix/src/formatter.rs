@@ -21,9 +21,9 @@ pub struct Formatter {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum IndentationType {
-    TwoSpaces,
-    FourSpaces,
     Tabs,
+    FourSpaces,
+    TwoSpaces,
 }
 
 impl Formatter {
@@ -284,33 +284,25 @@ impl Formatter {
     fn guess_indentation_type(expression: &str) -> IndentationType {
         let indentations = expression
             .lines()
-            .take(50)
-            .map(|x| {
-                let indentation = &x[..x.len() - x.trim_start().len()];
-                if indentation.ends_with('\t') {
-                    IndentationType::Tabs
-                } else if indentation.len() % 4 == 0 && !indentation.is_empty() {
-                    IndentationType::FourSpaces
-                } else {
-                    IndentationType::TwoSpaces
-                }
+            .take(25)
+            .flat_map(|x| match &x[..x.len() - x.trim_start().len()] {
+                "" => None,
+                x if x.ends_with('\t') => Some(IndentationType::Tabs),
+                x if x.len() % 4 == 0 => Some(IndentationType::FourSpaces),
+                _ => Some(IndentationType::TwoSpaces),
             })
             .fold(HashMap::new(), |mut acc, x| {
                 *acc.entry(x).or_insert(0) += 1;
                 acc
             });
-        let max = indentations
-            .iter()
-            .max_by_key(|x| (x.1, x.0))
-            .map_or(IndentationType::TwoSpaces, |x| *x.0);
-        if max == IndentationType::Tabs {
-            IndentationType::Tabs
-        } else if let Some(&x) = indentations.get(&IndentationType::FourSpaces)
-            && x >= indentations.get(&IndentationType::TwoSpaces).unwrap_or(&0) * 3
-        {
-            IndentationType::FourSpaces
-        } else {
+
+        if indentations.contains_key(&IndentationType::TwoSpaces) {
             IndentationType::TwoSpaces
+        } else {
+            indentations
+                .into_iter()
+                .max_by_key(|x| (x.1, x.0))
+                .map_or(IndentationType::TwoSpaces, |x| x.0)
         }
     }
 
@@ -437,7 +429,7 @@ mod tests {
             assert_eq!(got, expected, "{input}");
         }
         test("\tfirst\n    second\n\t\t\tthird", IndentationType::Tabs);
-        test("    a\n        b\n    c\n  d", IndentationType::FourSpaces);
+        test("a\n        b\n    c\n\td\n\te", IndentationType::FourSpaces);
         test("\ta\n  b\n    c\n    d", IndentationType::TwoSpaces);
         test("{}", IndentationType::TwoSpaces);
     }

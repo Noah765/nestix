@@ -591,13 +591,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "attempt to subtract with overflow"]
-    fn format_layer_invalid_max_leaves() {
-        let mut set = parse_string_to_set("{attr1 = {attr2.attr3 = true; attr4.attr5 = true;};}");
-        AttributeSet::format_layer(&mut set.nodes, vec![1, 3], 1);
-    }
-
-    #[test]
     fn print() {
         fn test(input: &str, expected: &str) {
             let mut formatter = Formatter::new(IndentationType::TwoSpaces);

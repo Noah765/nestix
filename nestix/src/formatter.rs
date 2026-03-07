@@ -179,21 +179,46 @@ impl Formatter {
 
     /// Writes the indented string `node` with normalized indentation.
     fn format_indented_string(&mut self, node: Str) {
-        let content = node.to_string();
-        if !content.contains('\n') {
-            self.write(&content);
-            return;
-        }
-
         self.increase_indentation();
         self.write("''");
 
-        let prefix_space_count = content[2..content.len() - 2]
-            .lines()
-            .filter(|x| x.chars().any(|x| x != ' '))
-            .map(|x| x.len() - x.trim_start_matches(' ').len())
-            .min()
-            .unwrap_or(0);
+        let mut prefix_space_count = usize::MAX;
+        let mut indent_first_line = false;
+
+        let mut parts = node.parts().peekable();
+        let mut is_first = true;
+        while let Some(part) = parts.next() {
+            let content = match part {
+                InterpolPart::Literal(x) => x,
+                InterpolPart::Interpolation(_) if is_first => {
+                    prefix_space_count = 0;
+                    is_first = false;
+                    continue;
+                }
+                InterpolPart::Interpolation(_) => continue,
+            };
+
+            let mut lines = content.syntax().text().split('\n').peekable();
+            if !is_first {
+                lines.next();
+                indent_first_line = indent_first_line || lines.peek().is_some();
+            }
+
+            if let Some(x) = lines.next_back()
+                && (parts.peek().is_some() || x.chars().any(|x| x != ' '))
+            {
+                prefix_space_count =
+                    prefix_space_count.min(x.len() - x.trim_start_matches(' ').len());
+            }
+            indent_first_line = indent_first_line || lines.peek().is_some();
+
+            for x in lines.filter(|x| x.chars().any(|x| x != ' ')) {
+                prefix_space_count =
+                    prefix_space_count.min(x.len() - x.trim_start_matches(' ').len());
+            }
+
+            is_first = false;
+        }
 
         let indentation_per_level = match self.indentation_type {
             IndentationType::TwoSpaces => "  ",
@@ -201,7 +226,6 @@ impl Formatter {
         };
 
         let mut parts = node.parts().peekable();
-        let mut is_first = true;
         while let Some(part) = parts.next() {
             match part {
                 InterpolPart::Literal(x) => {
@@ -209,7 +233,7 @@ impl Formatter {
                     let first_line = lines.next().expect("`lines` should not be empty");
                     let last_line = lines.next_back();
 
-                    if is_first && first_line.len() > prefix_space_count {
+                    if indent_first_line && first_line.len() > prefix_space_count {
                         self.indent_with(indentation_per_level);
                         self.write(&first_line[prefix_space_count..]);
                     } else {
@@ -226,7 +250,7 @@ impl Formatter {
                     }
 
                     let Some(last_line) = last_line else {
-                        is_first = false;
+                        indent_first_line = false;
                         continue;
                     };
                     self.write("\n");
@@ -240,7 +264,7 @@ impl Formatter {
                     }
                 }
                 InterpolPart::Interpolation(x) => {
-                    if is_first {
+                    if indent_first_line {
                         self.indent_with(indentation_per_level);
                     }
                     let indentation_level = self.indentation_level;
@@ -249,7 +273,7 @@ impl Formatter {
                 }
             }
 
-            is_first = false;
+            indent_first_line = false;
         }
 
         self.write("''");
@@ -386,6 +410,7 @@ mod tests {
             "{\n  a = let\n     x = ''x'';\n   in x;\n}",
             "{\n  a = let\n    x = ''x'';\n  in x;\n}",
         );
+        test("''${true\n}''", "''${true\n}''");
         test(
             "''  a\n  b\n   ${{attr1 = {attr2 = true;};}} \n ''",
             "''  a\n  b\n   ${{attr1.attr2 = true;}} \n''",
@@ -394,7 +419,9 @@ mod tests {
         test("\t\n\t\n''\na''", "\n\n''\n    a''");
         test("''a\n''", "''  a\n''");
         test("''a${true}a\n''", "''  a${true}a\n''");
-        test("''${true\n    }\nbelow''", "''  ${true\n    }\n  below''");
+        test("''${true\n    }\n below''", "''  ${true\n    }\n   below''");
+        test("''  a${true} b\n''", "''  a${true} b\n''");
+        test("''  a\n ${true}''", "''   a\n  ${true}''");
     }
 
     #[test]

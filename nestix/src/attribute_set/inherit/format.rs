@@ -1,7 +1,4 @@
-use rnix::{
-    SyntaxElement,
-    ast::{AstToken, Inherit, Whitespace},
-};
+use rnix::ast::{AstToken, Inherit, Whitespace};
 use rowan::ast::AstNode;
 
 use crate::parser::Parser;
@@ -48,7 +45,7 @@ impl InheritFormat {
                     .children_with_tokens()
                     .skip(1)
                     .take_while(|x| x.kind().is_trivia())
-                    .filter_map(|x| SyntaxElement::into_token(x).and_then(Whitespace::cast))
+                    .filter_map(|x| x.into_token().and_then(Whitespace::cast))
                     .any(|x| x.syntax().text().contains('\n')),
             }
         }
@@ -90,7 +87,7 @@ mod tests {
             assert_eq!(
                 InheritFormat::new(parse_string_to_inherit(set)),
                 InheritFormat::Multiline {
-                    from_on_separate_line: from_on_separate_line,
+                    from_on_separate_line,
                 }
             );
         }

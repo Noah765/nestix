@@ -16,7 +16,7 @@ impl Comment {
             .trim_start()
             .lines()
             .skip(1)
-            .filter(|x| x.trim_start().len() != 0)
+            .filter(|x| !x.trim_start().is_empty())
             .map(|x| &x[..x.len() - x.trim_start().len()])
             .min_by_key(|x| x.len())
             .unwrap_or("");
@@ -25,10 +25,10 @@ impl Comment {
             .trim_start()
             .lines()
             .map(|x| {
-                if x.trim_start().len() == 0 {
+                if x.trim_start().is_empty() {
                     String::from("")
                 } else {
-                    x.strip_prefix(&indentation).unwrap_or(x).to_string()
+                    x.strip_prefix(indentation).unwrap_or(x).to_string()
                 }
             })
             .collect();

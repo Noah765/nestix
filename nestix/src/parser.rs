@@ -40,11 +40,6 @@ impl Parser {
         self.0.peek().cloned()
     }
 
-    /// Consumes and returns the next element.
-    pub fn next(&mut self) -> Option<SyntaxElement> {
-        self.0.next()
-    }
-
     /// Consumes the following element if it is a whitespace token, then returns
     /// its text or an empty string.
     pub fn next_whitespace(&mut self) -> String {
@@ -155,8 +150,17 @@ impl Parser {
     /// Returns `true` if a whitespace token with a newline character is left.
     pub fn contains_linebreaks(self) -> bool {
         self.0
-            .filter_map(|x| SyntaxElement::into_token(x).and_then(Whitespace::cast))
+            .filter_map(|x| x.into_token().and_then(Whitespace::cast))
             .any(|x| x.syntax().text().contains('\n'))
+    }
+}
+
+impl Iterator for Parser {
+    type Item = SyntaxElement;
+
+    /// Consumes and returns the next element.
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
     }
 }
 
@@ -215,7 +219,7 @@ mod tests {
             ]) {
                 assert_eq!(
                     x.1(&mut Parser::new(Root::parse(code).syntax())),
-                    x.0.into_iter().map(|x| Comment::new(x)).collect::<Vec<_>>()
+                    x.0.iter().map(|x| Comment::new(x)).collect::<Vec<_>>()
                 );
             }
         }

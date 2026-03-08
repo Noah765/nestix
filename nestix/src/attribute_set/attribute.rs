@@ -177,7 +177,7 @@ impl Attribute {
     /// Panics if `first == second`, the node at `first` or the node at `second`
     /// is not an attribute, or if the value of the attribute at `first` or the
     /// value of the attribute at `second` is not an attribute set.
-    pub(super) fn merge(nodes: &mut Vec<Node>, first: usize, second: usize) -> bool {
+    pub(super) fn merge(nodes: &mut [Node], first: usize, second: usize) -> bool {
         let [first_node, second_node] = nodes
             .get_disjoint_mut([first, second])
             .expect("first != second");
@@ -289,10 +289,10 @@ impl Attribute {
     /// # Panics
     ///
     /// Panics if this attribute's value is not an attribute set.
-    pub(super) fn contains_inherit(&self, nodes: &Vec<Node>) -> bool {
+    pub(super) fn contains_inherit(&self, nodes: &[Node]) -> bool {
         match &self.value {
             AttributeValue::AttributeSet { roots, .. } => roots
-                .into_iter()
+                .iter()
                 .any(|&i| matches!(nodes[i].value, Element::Inherit(_))),
             AttributeValue::Expression(_) => panic!("attribute's value should be an attribute set"),
         }
@@ -303,10 +303,10 @@ impl Attribute {
     /// # Panics
     ///
     /// Panics if this attribute's value is not an attribute set.
-    pub(super) fn count_nested_attributes(&self, nodes: &Vec<Node>) -> usize {
+    pub(super) fn count_nested_attributes(&self, nodes: &[Node]) -> usize {
         match &self.value {
             AttributeValue::AttributeSet { roots, .. } => roots
-                .into_iter()
+                .iter()
                 .filter(|&&i| matches!(nodes[i].value, Element::Attribute(_)))
                 .count(),
             AttributeValue::Expression(_) => panic!("attribute's value should be an attribute set"),
@@ -321,7 +321,7 @@ impl Attribute {
     /// Panics if this attribute's value is not an attribute set.
     pub(super) fn get_nested_branches_and_leave_count(
         &self,
-        nodes: &Vec<Node>,
+        nodes: &[Node],
     ) -> (Vec<usize>, usize) {
         let roots = match &self.value {
             AttributeValue::AttributeSet { roots, .. } => roots,
@@ -367,15 +367,7 @@ impl Attribute {
         index: usize,
     ) -> Vec<(usize, RangeInclusive<usize>, Vec<&'a Comment>, String)> {
         let mut elements = Vec::new();
-        Self::print_with_path(
-            &self,
-            formatter,
-            nodes,
-            index,
-            "",
-            Vec::new(),
-            &mut elements,
-        );
+        self.print_with_path(formatter, nodes, index, "", Vec::new(), &mut elements);
         elements
     }
 

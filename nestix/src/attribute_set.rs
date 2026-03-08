@@ -150,7 +150,7 @@ impl AttributeSet {
     ///
     /// Panics if `index` is invalid or the node at that index is not an
     /// attribute.
-    fn get_attribute(nodes: &Vec<Node>, index: usize) -> &Attribute {
+    fn get_attribute(nodes: &[Node], index: usize) -> &Attribute {
         match &nodes[index].value {
             Element::Attribute(x) => x,
             _ => panic!("node at index {index} should be an attribute"),
@@ -163,7 +163,7 @@ impl AttributeSet {
     ///
     /// Panics if `index` is invalid or the node at that index is not an
     /// attribute.
-    fn get_attribute_mut(nodes: &mut Vec<Node>, index: usize) -> &mut Attribute {
+    fn get_attribute_mut(nodes: &mut [Node], index: usize) -> &mut Attribute {
         match &mut nodes[index].value {
             Element::Attribute(x) => x,
             _ => panic!("node at index {index} should be an attribute"),
@@ -312,7 +312,7 @@ impl AttributeSet {
     fn print_roots(
         formatter: &mut Formatter,
         nodes: &Vec<Node>,
-        roots: &Vec<usize>,
+        roots: &[usize],
         format: &AttributeSetFormat,
     ) -> Option<usize> {
         formatter.write("{");
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn format() {
-        fn test(input: &str, expected: Vec<bool>) {
+        fn test(input: &str, expected: &[bool]) {
             let mut set = parse_string_to_set(input);
             set.format();
             let got: Vec<_> = set
@@ -556,23 +556,23 @@ mod tests {
         }
         test(
             "{attr1 = {attr2 = {attr3 = true; attr4 = true;}; # Comment\n\nattr5 = {};};}",
-            vec![true, false],
+            &[true, false],
         );
         test(
             "{attr1 = {attr2 = {attr3 = true; attr4 = true;}; inherit; attr5 = {};};}",
-            vec![false, true],
+            &[false, true],
         );
         test(
             "{attr1 = {attr2 = {attr3 = true; attr4 = true;}; attr5 = {inherit;};};}",
-            vec![true, false, false],
+            &[true, false, false],
         );
         test(
             "{attr1 = {attr2.attr3 = true; attr4 = {attr5 = true; attr6 = true;};};}",
-            vec![true, true, false],
+            &[true, true, false],
         );
         test(
             "{attr1 = {inherit; attr2 = {attr3 = true; attr4 = true; attr5 = true;};};}",
-            vec![false, false],
+            &[false, false],
         );
     }
 

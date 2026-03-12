@@ -2,23 +2,9 @@
   description = "A structural Nix code formatter.";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-  inputs.treefmt = {
-    url = "github:numtide/treefmt-nix";
-    inputs.nixpkgs.follows = "nixpkgs";
-  };
 
-  outputs = {
-    nixpkgs,
-    treefmt,
-    ...
-  }: let
+  outputs = {nixpkgs, ...}: let
     eachSystem = f: nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed (x: f nixpkgs.legacyPackages.${x});
-
-    formatter = pkgs:
-      (treefmt.lib.evalModule pkgs {
-        programs.alejandra.enable = true;
-        programs.rustfmt.enable = true;
-      }).config.build.wrapper;
   in {
     packages = eachSystem (pkgs: rec {
       default = nestix;
@@ -30,8 +16,8 @@
       };
     });
 
-    devShells = eachSystem (pkgs: {default = pkgs.mkShell {packages = [pkgs.cargo (formatter pkgs)];};});
+    devShells = eachSystem (pkgs: {default = pkgs.mkShell {packages = with pkgs; [alejandra cargo rustfmt treefmt];};});
 
-    formatter = eachSystem formatter;
+    formatter = eachSystem (pkgs: pkgs.treefmt);
   };
 }

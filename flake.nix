@@ -13,6 +13,7 @@
         name = "nestix";
         src = ./.;
         cargoLock.lockFile = ./Cargo.lock;
+        meta.mainProgram = "nestix";
       };
     });
 
